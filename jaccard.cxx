@@ -8,31 +8,32 @@ uint32_t popcount(bitmask x){
   for (int i=0; i<sizeof(bitmask)*8; i++){
     p += (x>>i) & 1;
   }
+  return p;
 }
 
 template <typename bitmask>
 Matrix<bitmask> generate_random_A(int64_t m, int64_t n, double p, World & dw){
-  Matrix<bitmask> A(m,n,SP,dw);
-  std::vector<Pair<bitmask>> pairs((int64_t)((m*p*1.1)*(((double)n)/dw.np +1)));
+  int64_t mm = (m + sizeof(bitmask)*8 -1)/(sizeof(bitmask)*8);
+  Matrix<bitmask> A(mm,n,SP,dw);
+  std::vector<Pair<bitmask>> pairs;
   World selfw(MPI_COMM_SELF);
   for (int64_t i=dw.rank; i<n; i+=dw.np){
     Vector<bool> v(m,SP,selfw);
     v.fill_sp_random(1,1,p);
-    int64_t * inds;
-    bool * vals;
+    Pair<bool> * vpairs;
     int64_t numpair;
-    v.get_local_data(&numpair, &inds, &vals, true);
+    v.get_local_pairs(&numpair, &vpairs, true);
     int64_t j = 0;
     while (j < numpair){
       bitmask mask = 0;
-      int64_t row = inds[j] / (sizeof(bitmask)*8);
+      int64_t row = vpairs[j].k / (sizeof(bitmask)*8);
       do {
-        mask = mask | (1<<(inds[j]%(sizeof(bitmask)*8)));
+        mask = mask | (((bitmask)1)<<(vpairs[j].k%(sizeof(bitmask)*8)));
         j++;
-      } while (j < numpair && inds[j] / (sizeof(bitmask)*8) == row);
-      printf("inds[%ld]=%ld,mask = %lu\n",j,inds[j],(uint64_t)mask);
-      pairs.push_back(Pair<bitmask>(row+i*m,mask));
+      } while (j < numpair && vpairs[j].k / (sizeof(bitmask)*8) == row);
+      pairs.push_back(Pair<bitmask>(row+i*mm,mask));
     }
+    delete [] vpairs;
   }
   A.write(pairs.size(),pairs.data());
  
@@ -40,11 +41,16 @@ Matrix<bitmask> generate_random_A(int64_t m, int64_t n, double p, World & dw){
 }
 
 template <typename bitmask>
+uint64_t and_count(bitmask a, bitmask b){
+  return popcount<bitmask>(a&b);
+}
+
+template <typename bitmask>
 void jaccard_acc(Matrix<bitmask> & A, Matrix<uint64_t> & B, Matrix<uint64_t> & C){
-  B["ij"] += Function<bitmask,bitmask,uint64_t>([](bitmask a, bitmask b){ return (uint64_t)popcount(a&b); })(A["ki"],A["kj"]);
+  B["ij"] += Function<bitmask,bitmask,uint64_t>([](bitmask a, bitmask b){ return (uint64_t)popcount<bitmask>(a&b); })(A["ki"],A["kj"]);
 
   Vector<uint64_t> v(A.ncol, *A.wrld);
-  v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount(a); })(A["ki"]);
+  v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount<bitmask>(a); })(A["ki"]);
   C["ij"] += v["i"] + v["j"];
 }  
 
@@ -59,22 +65,21 @@ Matrix<> jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch, Wor
     Matrix<bitmask> A = generate_random_A<bitmask>(ib, n, p, dw);
     jaccard_acc(A, B, C);
   }
-  B.print();
-  C.print();
-  S["ij"] += Function<uint64_t,uint64_t,double>([](bitmask a, bitmask b){ return (double)a/(double)b; })(B["ik"],C["kj"]);
+  S["ij"] += Function<uint64_t,uint64_t,double>([](bitmask a, bitmask b){ if (b==0){ assert(a==0); return 0.; } else return (double)a/(double)b; })(B["ij"],C["ij"]);
   
   return S;
 }
 
 bool is_bounded(Matrix<> & S){
-  S.print();
   int64_t num_unbounded = CTF::Function<double,int64_t>([](double s){ return (s>1.) || (s<0.); })(S["ij"]);
   return num_unbounded == 0;
 }
 
 bool test_jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch){
   World dw(MPI_COMM_WORLD);
+  CTF_int::init_rng(dw.rank);
   Matrix<> S32 = jaccard_calc_random<uint32_t>(m, n, p, nbatch, dw);
+  CTF_int::init_rng(dw.rank);
   Matrix<> S64 = jaccard_calc_random<uint64_t>(m, n, p, nbatch, dw);
 
   bool is_bounded_S32 = is_bounded(S32);
@@ -156,5 +161,6 @@ int main(int argc, char ** argv){
     else
       printf("Correctness tests FAILED!\n");
   }
+  MPI_Finalize();
 }
 
