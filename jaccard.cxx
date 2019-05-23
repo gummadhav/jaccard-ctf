@@ -91,8 +91,7 @@ template <typename bitmask>
 void jaccard_acc(Matrix<bitmask> & A, Matrix<uint64_t> & B, Matrix<uint64_t> & C){
   // B["ij"] += Function<bitmask,bitmask,uint64_t>([](bitmask a, bitmask b){ return (uint64_t)popcount<bitmask>(a&b); })(A["ki"],A["kj"]);
 
-  Bivar_Function<bitmask,bitmask,uint64_t> * jaccard_kernel = get_jaccard_kernel<bitmask>();
-  (*jaccard_kernel)(A["ki"],A["kj"],B["ij"]);
+  (*get_jaccard_kernel<bitmask>())(A["ki"],A["kj"],B["ij"]);
 
   Vector<uint64_t> v(A.ncol, *A.wrld);
   v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount<bitmask>(a); })(A["ki"]);
