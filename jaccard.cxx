@@ -17,6 +17,18 @@ uint32_t popcount(bitmask x){
   return p;
 }
 
+template <typename bitmask>
+uint64_t wfunc(bitmask a, bitmask b) {
+  return (uint64_t)popcount<bitmask>(a&b);
+}
+
+template <typename bitmask>
+Bivar_Function<bitmask,bitmask,uint64_t> * get_jaccard_kernel(){
+  Bivar_Kernel<bitmask,bitmask,uint64_t,wfunc> * k = new Bivar_Kernel<bitmask,bitmask,uint64_t,wfunc>();
+  k->intersect_only = true;
+  return k;
+}
+
 /**
  * \brief Generate an m-by-n bool sparse matrix, then, given bitmasks of len_bm bits,
  *        generate a random (m/len_bm)-by-n sparse CTF matrix,
@@ -77,7 +89,10 @@ Matrix<bitmask> generate_random_A(int64_t m, int64_t n, double p, World & dw){
  */
 template <typename bitmask>
 void jaccard_acc(Matrix<bitmask> & A, Matrix<uint64_t> & B, Matrix<uint64_t> & C){
-  B["ij"] += Function<bitmask,bitmask,uint64_t>([](bitmask a, bitmask b){ return (uint64_t)popcount<bitmask>(a&b); })(A["ki"],A["kj"]);
+  // B["ij"] += Function<bitmask,bitmask,uint64_t>([](bitmask a, bitmask b){ return (uint64_t)popcount<bitmask>(a&b); })(A["ki"],A["kj"]);
+
+  Bivar_Function<bitmask,bitmask,uint64_t> * jaccard_kernel = get_jaccard_kernel<bitmask>();
+  (*jaccard_kernel)(A["ki"],A["kj"],B["ij"]);
 
   Vector<uint64_t> v(A.ncol, *A.wrld);
   v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount<bitmask>(a); })(A["ki"]);
