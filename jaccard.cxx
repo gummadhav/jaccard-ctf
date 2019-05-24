@@ -9,6 +9,7 @@ using namespace CTF;
  * \param[in] x bitmask cotnaining some 0 and 1 bits
  * \return number of 1 bits in x
  */
+/*
 template <typename bitmask>
 uint32_t popcount(bitmask x){
   uint32_t p = 0;
@@ -17,11 +18,11 @@ uint32_t popcount(bitmask x){
   }
   return p;
 }
+*/
 
 template <typename bitmask>
 uint64_t wfunc(bitmask a, bitmask b) {
-  // return (uint64_t)popcount<bitmask>(a&b);
-  return (uint64_t)popcount32(a&b);
+  return (uint64_t)popcount<bitmask>(a&b);
 }
 
 template <typename bitmask>
@@ -96,8 +97,7 @@ void jaccard_acc(Matrix<bitmask> & A, Matrix<uint64_t> & B, Matrix<uint64_t> & C
   (*get_jaccard_kernel<bitmask>())(A["ki"],A["kj"],B["ij"]);
 
   Vector<uint64_t> v(A.ncol, *A.wrld);
-  //v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount<bitmask>(a); })(A["ki"]);
-  v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount32(a); })(A["ki"]);
+  v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount<bitmask>(a); })(A["ki"]);
   C["ij"] += v["i"] + v["j"];
 }  
 
