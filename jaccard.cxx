@@ -1,4 +1,5 @@
 #include <ctf.hpp>
+#include "bitcount.h"
 
 using namespace CTF;
 
@@ -19,7 +20,8 @@ uint32_t popcount(bitmask x){
 
 template <typename bitmask>
 uint64_t wfunc(bitmask a, bitmask b) {
-  return (uint64_t)popcount<bitmask>(a&b);
+  // return (uint64_t)popcount<bitmask>(a&b);
+  return (uint64_t)popcount32(a&b);
 }
 
 template <typename bitmask>
@@ -94,7 +96,8 @@ void jaccard_acc(Matrix<bitmask> & A, Matrix<uint64_t> & B, Matrix<uint64_t> & C
   (*get_jaccard_kernel<bitmask>())(A["ki"],A["kj"],B["ij"]);
 
   Vector<uint64_t> v(A.ncol, *A.wrld);
-  v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount<bitmask>(a); })(A["ki"]);
+  //v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount<bitmask>(a); })(A["ki"]);
+  v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount32(a); })(A["ki"]);
   C["ij"] += v["i"] + v["j"];
 }  
 
