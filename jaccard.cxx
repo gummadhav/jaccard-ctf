@@ -53,10 +53,13 @@ Matrix<bitmask> generate_random_A(int64_t m, int64_t n, double p, World & dw){
   std::vector<Pair<bitmask>> pairs;
   // define communicator containing each processor by itself
   World selfw(MPI_COMM_SELF);
+  std::default_random_engine generator;
+  std::normal_distribution<double> distribution(p, 0.003);
   for (int64_t i=dw.rank; i<n; i+=dw.np){
     // define a bool CTF sparse vector locally, used only to generate a random sparse vector
     Vector<bool> v(m,SP,selfw);
-    v.fill_sp_random(1,1,p);
+    double p_dist = distribution(generator);
+    v.fill_sp_random(1,1,p_dist);
     Pair<bool> * vpairs;
     int64_t numpair;
     // extract local nonzero data from vector, which in this case is all data
