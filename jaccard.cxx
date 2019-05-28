@@ -151,6 +151,7 @@ bool test_jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch){
   World dw(MPI_COMM_WORLD);
   CTF_int::init_rng(dw.rank);
   Matrix<> S32 = jaccard_calc_random<uint32_t>(m, n, p, nbatch, dw);
+  
   CTF_int::init_rng(dw.rank);
   Matrix<> S64 = jaccard_calc_random<uint64_t>(m, n, p, nbatch, dw);
 
@@ -179,6 +180,8 @@ bool test_jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch){
     return false;
   } else
     return true;
+  
+  //return true;
 }
 
 char* getCmdOption(char ** begin,
