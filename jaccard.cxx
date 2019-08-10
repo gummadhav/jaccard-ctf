@@ -1,5 +1,6 @@
 #include <ctf.hpp>
 #include "bitcount.h"
+#include "file_reader.h"
 
 using namespace CTF;
 
@@ -114,7 +115,7 @@ void jaccard_acc(Matrix<bitmask> & A, Matrix<uint64_t> & B, Matrix<uint64_t> & C
  * \return S matrix, defined as above
  */
 template <typename bitmask>
-Matrix<> jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch, World & dw){
+Matrix<> jaccard_calc(int64_t m, int64_t n, double p, int64_t nbatch, World & dw){
   Matrix<> S(n, n, dw);
   Matrix<uint64_t> B(n, n, dw);
   Matrix<uint64_t> C(n, n, dw);
@@ -150,21 +151,21 @@ bool is_bounded(Matrix<> & S){
 bool test_jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch){
   World dw(MPI_COMM_WORLD);
   CTF_int::init_rng(dw.rank);
-  Matrix<> S32 = jaccard_calc_random<uint32_t>(m, n, p, nbatch, dw);
+  Matrix<> S32 = jaccard_calc<uint32_t>(m, n, p, nbatch, dw);
   CTF_int::init_rng(dw.rank);
-  Matrix<> S64 = jaccard_calc_random<uint64_t>(m, n, p, nbatch, dw);
+  Matrix<> S64 = jaccard_calc<uint64_t>(m, n, p, nbatch, dw);
 
   bool is_bounded_S32 = is_bounded(S32);
   if (!is_bounded_S32){
     if (dw.rank == 0){
-      printf("ERROR: uint32_t type calculation of jaccard_calc_random yielded invalid similarities\n");
+      printf("ERROR: uint32_t type calculation of jaccard_calc yielded invalid similarities\n");
       return false;
     }
   }
   bool is_bounded_S64 = is_bounded(S64);
   if (!is_bounded_S64){
     if (dw.rank == 0){
-      printf("ERROR: uint64_t type calculation of jaccard_calc_random yielded invalid similarities\n");
+      printf("ERROR: uint64_t type calculation of jaccard_calc yielded invalid similarities\n");
       return false;
     }
   }
@@ -180,6 +181,121 @@ bool test_jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch){
   } else
     return true;
 }
+
+template <typename bitmask>
+void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, World & dw)
+{
+    uint64_t *kmers = nullptr;
+    int64_t nkmers = 0;
+    // create matrix m X n
+    Matrix<int> A(m, n, SP, dw, "hypersparse_A");
+    // read files
+    for (int64_t i = 1; i <= n; i++) {
+      char gfileTemp[10000];
+      sprintf(gfileTemp, "%s_%lld", gfile, i);
+
+#ifdef MPIIO
+      char **leno;
+      nkmers = read_file_mpiio(dw.rank, dw.np, gfileTemp, &kmers, &leno);
+      process_data(leno, nkmers, dw.rank, &kmers);
+      free(leno[0]);
+      free(leno);
+#else
+      nkmers = read_file(dw.rank, dw.np, gfileTemp, &kmers);
+#endif
+      
+      // fill the matrix with k-mers
+      int64_t *gIndex = new int64_t[nkmers];
+      int *gData = new int[nkmers];
+      for (int64_t j = 0; j < nkmers; j++) {
+        gIndex[j] = kmers[j] + (i - 1) * m;
+        gData[j] = 1;
+      }
+      A.write(nkmers, gIndex, gData);
+      delete [] gIndex;
+      delete [] gData;
+      free(kmers);
+    }
+    // A.print_matrix();
+    Vector<int> V(n, dw);
+    V.fill_sp_random(1, 1, 1);
+    Vector<int> R(m, SP, dw);
+    // pull out the non-zero rows
+    R["i"] = A["ij"] * V["j"];
+    int64_t numpair;
+    Pair<int> *vpairs;
+    R.get_all_pairs(&numpair, &vpairs, true); // R is duplicated across all processes
+    
+    Pair<int> * rowD = new Pair<int>[n];
+
+    int len_bm = sizeof(bitmask) * 8;
+    int64_t mm = (numpair + len_bm - 1) / len_bm;
+    Matrix<bitmask> J(mm, n, SP, dw, "B");
+    // Predefining size to avoid reallocation/copy in push_back(); 
+    // if there is imbalance of columns distributed across processes, the corner case should be handled
+    Pair<bitmask> *colD = new Pair<bitmask>[mm];
+    Pair<int> *colA = new Pair<int>[len_bm];
+    // Update B in parallel; the remainder columns are then updated by process 0 alone
+    int rem_it = 0;
+    uint64_t numColsP = n / dw.np;
+    int64_t i = dw.rank; // Column index
+    int64_t columnsProcessed = 0;
+    while (rem_it < 2) {
+      for (; columnsProcessed < numColsP; columnsProcessed++) {
+        int64_t rowNo = 0; // To keep track of the new row number
+        // Read a column from Matrix A
+        int64_t j = 0; // Index into vpairs
+        while (j < numpair) {
+          int64_t k = 0; // Index into colA; populate mask
+          while (j < numpair && k < len_bm) {
+            colA[k].k = vpairs[j].k + i * m;
+            k++; j++;
+          }
+          if (rem_it && dw.rank) A.read(0, nullptr); 
+          else A.read(k, colA);
+          // Store the mask[len_bm] in colD
+          bitmask mask = 0;
+          for (int64_t l = 0; l < k; l++) {
+            // TODO: can read only non-zero data
+            if(colA[l].d) {
+              mask = mask | ((bitmask)1) << ((colA[l].k % m) % len_bm);
+            }
+          }
+          colD[rowNo].d = mask;
+          colD[rowNo].k = rowNo + i * mm;
+          rowNo++;
+        }
+        if (!rem_it) {
+          i += dw.np;
+          J.write(mm, colD);
+        }
+        else {
+          i++;
+          if(dw.rank == 0) J.write(mm, colD);
+          else J.write(0, nullptr);
+        }
+      }
+      // handle the remainder columns
+      int64_t rem = (n / dw.np) * dw.np;
+      i = rem;
+      columnsProcessed = rem;
+      numColsP = n;
+      rem_it++;
+    }
+    J.print_matrix();
+    A.free_self();
+    delete [] vpairs;
+    
+    // Calculate the similarity matrix
+    // TODO: batches
+    Matrix<> S(n, n, dw);
+    Matrix<uint64_t> B(n, n, dw);
+    Matrix<uint64_t> C(n, n, dw);
+    jaccard_acc(J, B, C);
+    // subtract intersection from union to get or
+    C["ij"] -= B["ij"];
+    S["ij"] += Function<uint64_t,uint64_t,double>([](bitmask a, bitmask b){ if (b==0){ assert(a==0); return 0.; } else return (double)a/(double)b; })(B["ij"],C["ij"]);
+} 
 
 char* getCmdOption(char ** begin,
                    char ** end,
@@ -197,10 +313,12 @@ int main(int argc, char ** argv){
   double p;
   int const in_num = argc;
   char ** input_str = argv;
+  char *gfile = NULL;
 
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &np);
+  World dw(MPI_COMM_WORLD);
   
   if (getCmdOption(input_str, input_str+in_num, "-m")){
     m = atoi(getCmdOption(input_str, input_str+in_num, "-m"));
@@ -209,8 +327,8 @@ int main(int argc, char ** argv){
 
   if (getCmdOption(input_str, input_str+in_num, "-n")){
     n = atoi(getCmdOption(input_str, input_str+in_num, "-n"));
-    if (n < 0) n = 15;
-  } else n = 15;
+    if (n < 0) n = 2;
+  } else n = 2;
 
   if (getCmdOption(input_str, input_str+in_num, "-p")){
     p = atof(getCmdOption(input_str, input_str+in_num, "-p"));
@@ -219,9 +337,16 @@ int main(int argc, char ** argv){
  
   if (getCmdOption(input_str, input_str+in_num, "-nbatch")){
     nbatch = atoi(getCmdOption(input_str, input_str+in_num, "-nbatch"));
-    if (nbatch < 0) nbatch = 5;
-  } else nbatch = 5;
+    if (nbatch < 0) nbatch = 1;
+  } else nbatch = 1;
 
+  if (getCmdOption(input_str, input_str+in_num, "-f")) {
+     gfile = getCmdOption(input_str, input_str+in_num, "-f");
+   } else gfile = NULL;
+  
+  if (gfile != NULL) {
+    jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, dw);
+  }
 
   if (rank == 0){
     printf("Testing Jaccard similarity matrix construction with %ld-by-%ld k-mer encoding (A) and %ld-by-%ld similarity matrix (S) with nonzero probability in A being p=%lf and number of batches (sets of rows of A) being %ld\n",m,n,n,n,p,nbatch);
