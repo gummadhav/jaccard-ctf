@@ -223,6 +223,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
 
     // create matrix m X n
     while (batchNo < nbatch) {
+      Timer t_fileRead("File read");
+      t_fileRead.start();
       Matrix<int> A(kmersInBatch, n, SP, dw, "hypersparse_A");
 
       for (int64_t i = 0; i < maxfiles; i++) {
@@ -264,8 +266,11 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         if (nkmersToWrite != 0) A.write(nkmersToWrite, gIndex.data(), gData.data());
         else A.write(0, nullptr);
       }
-      A.print_matrix();
+      t_fileRead.stop();
+      // A.print_matrix();
 
+      Timer t_squashZeroRows("Squash zero rows");
+      t_squashZeroRows.start();
       Vector<int> V(n, dw);
       V.fill_sp_random(1, 1, 1);
       Vector<int> R(kmersInBatch, SP, dw);
@@ -274,7 +279,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       int64_t numpair;
       Pair<int> *vpairs;
       R.get_all_pairs(&numpair, &vpairs, true); // R is duplicated across all processes
-      printf("rank: %d numpair: %lld\n", dw.rank, numpair);
+      // printf("rank: %d numpair: %lld\n", dw.rank, numpair);
 
       Pair<int> * rowD = new Pair<int>[n];
 
@@ -285,7 +290,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       // if there is imbalance of columns distributed across processes, the corner case should be handled
       Pair<bitmask> *colD = new Pair<bitmask>[mm];
       Pair<int> *colA = new Pair<int>[len_bm];
-      // Update B in parallel; the remainder columns are then updated by process 0 alone
+      // Update J in parallel; the remainder columns are then updated by process 0 alone
       int rem_it = 0;
       uint64_t numColsP = n / dw.np;
       int64_t i = dw.rank; // Column index
@@ -332,23 +337,28 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         numColsP = n;
         rem_it++;
       }
-      J.print_matrix();
-      printf("rank: %d J.ncol: %lld J.nrow: %lld\n", dw.rank, J.ncol, J.nrow);
+      t_squashZeroRows.stop();
+      // J.print_matrix();
+      // printf("rank: %d J.ncol: %lld J.nrow: %lld\n", dw.rank, J.ncol, J.nrow);
       A.free_self();
       delete [] vpairs;
-
+      Timer t_jaccAcc("jaccard_acc");
+      t_jaccAcc.start();
       if (J.ncol != 0 || J.nrow != 0) {
         jaccard_acc(J, B, C);
       }
-      
+      t_jaccAcc.stop();
       batchNo++;
       batchStart = batchNo * kmersInBatch;
       batchEnd = (batchNo + 1) * kmersInBatch - 1;
     }
+    Timer t_computeS("Compute S");
+    t_computeS.start();
     // subtract intersection from union to get or
     C["ij"] -= B["ij"];
     S["ij"] += Function<uint64_t,uint64_t,double>([](bitmask a, bitmask b){ if (b==0){ assert(a==0); return 0.; } else return (double)a/(double)b; })(B["ij"],C["ij"]);
-    S.print_matrix();
+    t_computeS.stop();
+    // S.print_matrix();
 } 
 
 char* getCmdOption(char ** begin,
