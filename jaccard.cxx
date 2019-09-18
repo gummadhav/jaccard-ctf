@@ -236,8 +236,16 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         int64_t fileNo = (i * dw.np) + dw.rank;
         if (batchNo == 0) {
           char gfileTemp[10000];
-          sprintf(gfileTemp, "%s_%lld", gfile, fileNo);
+          sprintf(gfileTemp, "%s.%lld.text.annodbg", gfile, fileNo);
           fp[i] = fopen(gfileTemp, "r");
+          if (fp[i] == nullptr) {
+            printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
+            MPI_Abort(MPI_COMM_WORLD, -1);
+          }
+          // reads to skip the first line
+          int64_t dummy;
+          fscanf(fp[i], "%lld", &dummy);
+          fscanf(fp[i], "%lld", &dummy);
           // printf("rank: %d file opened: %s\n", dw.rank, gfileTemp);
         }
 
@@ -410,8 +418,12 @@ int main(int argc, char ** argv){
   
   if (gfile != NULL) {
     jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, dw);
+    if (rank == 0) {
+      printf("S matrix computed for the specified input dataset\n");
+    }
   }
 
+  /*
   if (rank == 0){
     printf("Testing Jaccard similarity matrix construction with %ld-by-%ld k-mer encoding (A) and %ld-by-%ld similarity matrix (S) with nonzero probability in A being p=%lf and number of batches (sets of rows of A) being %ld\n",m,n,n,n,p,nbatch);
   }
@@ -422,6 +434,7 @@ int main(int argc, char ** argv){
     else
       printf("Correctness tests FAILED!\n");
   }
+  */
   MPI_Finalize();
 }
 
