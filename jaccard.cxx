@@ -393,12 +393,12 @@ int main(int argc, char ** argv){
   World dw(MPI_COMM_WORLD);
   
   if (getCmdOption(input_str, input_str+in_num, "-m")){
-    m = atoi(getCmdOption(input_str, input_str+in_num, "-m"));
+    m = atoll(getCmdOption(input_str, input_str+in_num, "-m"));
     if (m < 0) m = 1023;
   } else m = 1023;
 
   if (getCmdOption(input_str, input_str+in_num, "-n")){
-    n = atoi(getCmdOption(input_str, input_str+in_num, "-n"));
+    n = atoll(getCmdOption(input_str, input_str+in_num, "-n"));
     if (n < 0) n = 2;
   } else n = 2;
 
