@@ -217,12 +217,19 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
     int64_t batchEnd = (batchNo + 1) * kmersInBatch - 1;
     // printf("rank: %d nfiles: %lld\n", dw.rank, nfiles);
 
+    // To handle a case where m is not exactly divisible by nbatch
+    // A<kmersInBatch, n> will be an overkill for the last batch
+    bool lastBatch = false;
+    if ((m % nbatch) != 0) {
+      lastBatch = true; 
+    }
+
     Matrix<> S(n, n, dw);
     Matrix<uint64_t> B(n, n, dw);
     Matrix<uint64_t> C(n, n, dw);
 
     // create matrix m X n
-    while (batchNo < nbatch) {
+    while (batchNo < nbatch || lastBatch) {
       Timer t_fileRead("File read");
       t_fileRead.start();
       Matrix<int> A(kmersInBatch, n, SP, dw, "hypersparse_A");
@@ -237,6 +244,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         if (batchNo == 0) {
           char gfileTemp[10000];
           sprintf(gfileTemp, "%s.%lld.text.annodbg", gfile, fileNo);
+          // sprintf(gfileTemp, "%s_%lld", gfile, fileNo);
           fp[i] = fopen(gfileTemp, "r");
           if (fp[i] == nullptr) {
             printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
@@ -262,7 +270,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         int64_t kmer;
         // read the file till batchEnd or the end of file
         while (fscanf(fp[i], "%lld", &kmer) != EOF) {
-          if (kmer > batchEnd) {
+          if (kmer > batchEnd && !(lastBatch && batchNo >= nbatch)) {
             lastkmer[i] = kmer;
             break;
           }
@@ -356,6 +364,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         jaccard_acc(J, B, C);
       }
       t_jaccAcc.stop();
+      if (batchNo >= nbatch ) {
+        lastBatch = false;
+      }
       batchNo++;
       batchStart = batchNo * kmersInBatch;
       batchEnd = (batchNo + 1) * kmersInBatch - 1;
