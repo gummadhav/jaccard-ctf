@@ -261,23 +261,26 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         std::vector<int64_t> gIndex;
         std::vector<int> gData;
         // If there was a last read kmer from the file
-        if (lastkmer[i] != -1) {
-          gIndex.push_back((lastkmer[i] - batchStart) + fileNo * kmersInBatch);
+        if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
+          gIndex.push_back(((lastkmer[i] - batchStart) + fileNo * kmersInBatch));
           gData.push_back(1);
           nkmersToWrite++;
           lastkmer[i] = -1;
         }
         int64_t kmer;
         // read the file till batchEnd or the end of file
-        while (fscanf(fp[i], "%lld", &kmer) != EOF) {
-          if (kmer > batchEnd && !(lastBatch && batchNo >= nbatch)) {
-            lastkmer[i] = kmer;
-            break;
+        // don't read the file if the previous read kmer itself is not being processed this batch
+        if (lastkmer[i] == -1) {
+          while (fscanf(fp[i], "%lld", &kmer) != EOF) {
+            if (kmer > batchEnd && !(lastBatch && batchNo >= nbatch)) {
+              lastkmer[i] = kmer;
+              break;
+            }
+            // write kmer to A
+            gIndex.push_back(((kmer - batchStart) + fileNo * kmersInBatch));
+            gData.push_back(1);
+            nkmersToWrite++;
           }
-          // write kmer to A
-          gIndex.push_back((kmer - batchStart) + fileNo * kmersInBatch);
-          gData.push_back(1);
-          nkmersToWrite++;
         }
         if (nkmersToWrite != 0) A.write(nkmersToWrite, gIndex.data(), gData.data());
         else A.write(0, nullptr);
@@ -294,8 +297,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       R["i"] = A["ij"] * V["j"];
       int64_t numpair;
       Pair<int> *vpairs;
-      R.get_all_pairs(&numpair, &vpairs, true); // R is duplicated across all processes
-      // printf("rank: %d numpair: %lld\n", dw.rank, numpair);
+      R.get_all_pairs(&numpair, &vpairs, true); // vpairs is duplicated across all processes
 
       Pair<int> * rowD = new Pair<int>[n];
 
@@ -305,7 +307,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       // Predefining size to avoid reallocation/copy in push_back(); 
       // if there is imbalance of columns distributed across processes, the corner case should be handled
       Pair<bitmask> *colD = new Pair<bitmask>[mm];
-      Pair<int> *colA = new Pair<int>[len_bm];
+      Pair<int> *colA = new Pair<int>[numpair];
       // Update J in parallel; the remainder columns are then updated by process 0 alone
       int rem_it = 0;
       uint64_t numColsP = n / dw.np;
@@ -317,20 +319,24 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
           // Read a column from Matrix A
           int64_t j = 0; // Index into vpairs
           while (j < numpair) {
-            int64_t k = 0; // Index into colA; populate mask
-            while (j < numpair && k < len_bm) {
-              colA[k].k = vpairs[j].k + i * kmersInBatch;
-              k++; j++;
-            }
-            if (rem_it && dw.rank) A.read(0, nullptr); 
-            else A.read(k, colA);
+            colA[j].k = vpairs[j].k + i * kmersInBatch;
+            j++;
+          }
+          if (rem_it && dw.rank) A.read(0, nullptr); 
+          else A.read(j, colA);
+          j = 0;
+          while(j < numpair) {
             // Store the mask[len_bm] in colD
             bitmask mask = 0;
-            for (int64_t l = 0; l < k; l++) {
+            // for (int64_t l = 0; l < k; l++) {
+            int64_t l = 0;
+            while(j < numpair && l < len_bm) {
               // TODO: can read only non-zero data
-              if(colA[l].d) {
-                mask = mask | ((bitmask)1) << ((colA[l].k % kmersInBatch) % len_bm);
+              if(colA[j].d) {
+                // j = rowNo in J that the kmer should be in after squashing zero rows
+                mask = mask | ((bitmask)1) << ((j % kmersInBatch) % len_bm);
               }
+              l++; j++;
             }
             colD[rowNo].d = mask;
             colD[rowNo].k = rowNo + i * mm;
@@ -358,6 +364,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       // printf("rank: %d J.ncol: %lld J.nrow: %lld\n", dw.rank, J.ncol, J.nrow);
       A.free_self();
       delete [] vpairs;
+      delete [] colA;
+      delete [] colD;
+      delete [] rowD;
       Timer t_jaccAcc("jaccard_acc");
       t_jaccAcc.start();
       if (J.ncol != 0 || J.nrow != 0) {
