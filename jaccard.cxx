@@ -314,6 +314,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       int len_bm = sizeof(bitmask) * 8;
       int64_t mm = (numpair + len_bm - 1) / len_bm;
 
+      // Predefining size to avoid reallocation/copy in push_back(); 
       Pair<bitmask> *colD = new Pair<bitmask>[mm * maxfiles];
 
       int64_t it_gIndex = 0;
@@ -360,15 +361,12 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       if (dw.rank == 0) {
         printf("Zero rows squashed, batchNo: %lld\n", batchNo);
       }
-      // gIndex.shrink_to_fit();
+      // gIndex.shrink_to_fit(); // TODO: should we free this space?
       Matrix<bitmask> J(mm, n, SP, dw, "J");
       J.write(it_colD, colD);
       if (dw.rank == 0) {
         printf("J constructed, batchNo: %lld\n", batchNo);
       }
-      // gIndex.shrink_to_fit();
-      // Predefining size to avoid reallocation/copy in push_back(); 
-      // if there is imbalance of columns distributed across processes, the corner case should be handled
       t_squashZeroRows.stop();
       
       
@@ -385,9 +383,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       t_jaccAcc.stop();
       if (batchNo >= nbatch ) {
         lastBatch = false;
-      }
-      if (dw.rank == 0) {
-        printf("Batch: %lld done\n", batchNo);
       }
       if (dw.rank == 0) {
         printf("Batch complete, batchNo: %lld\n", batchNo);
