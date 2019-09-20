@@ -421,36 +421,38 @@ int main(int argc, char ** argv){
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &np);
-  World dw(MPI_COMM_WORLD);
-  
-  if (getCmdOption(input_str, input_str+in_num, "-m")){
-    m = atoll(getCmdOption(input_str, input_str+in_num, "-m"));
-    if (m < 0) m = 1023;
-  } else m = 1023;
+  {
+    World dw(MPI_COMM_WORLD);
+    
+    if (getCmdOption(input_str, input_str+in_num, "-m")){
+      m = atoll(getCmdOption(input_str, input_str+in_num, "-m"));
+      if (m < 0) m = 1023;
+    } else m = 1023;
 
-  if (getCmdOption(input_str, input_str+in_num, "-n")){
-    n = atoll(getCmdOption(input_str, input_str+in_num, "-n"));
-    if (n < 0) n = 2;
-  } else n = 2;
+    if (getCmdOption(input_str, input_str+in_num, "-n")){
+      n = atoll(getCmdOption(input_str, input_str+in_num, "-n"));
+      if (n < 0) n = 2;
+    } else n = 2;
 
-  if (getCmdOption(input_str, input_str+in_num, "-p")){
-    p = atof(getCmdOption(input_str, input_str+in_num, "-p"));
-    if (p < 0) p = .01;
-  } else p = .01;
+    if (getCmdOption(input_str, input_str+in_num, "-p")){
+      p = atof(getCmdOption(input_str, input_str+in_num, "-p"));
+      if (p < 0) p = .01;
+    } else p = .01;
  
-  if (getCmdOption(input_str, input_str+in_num, "-nbatch")){
-    nbatch = atoi(getCmdOption(input_str, input_str+in_num, "-nbatch"));
-    if (nbatch < 0) nbatch = 1;
-  } else nbatch = 1;
+    if (getCmdOption(input_str, input_str+in_num, "-nbatch")){
+      nbatch = atoi(getCmdOption(input_str, input_str+in_num, "-nbatch"));
+      if (nbatch < 0) nbatch = 1;
+    } else nbatch = 1;
 
-  if (getCmdOption(input_str, input_str+in_num, "-f")) {
-     gfile = getCmdOption(input_str, input_str+in_num, "-f");
-   } else gfile = NULL;
-  
-  if (gfile != NULL) {
-    jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, dw);
-    if (rank == 0) {
-      printf("S matrix computed for the specified input dataset\n");
+    if (getCmdOption(input_str, input_str+in_num, "-f")) {
+       gfile = getCmdOption(input_str, input_str+in_num, "-f");
+     } else gfile = NULL;
+    
+    if (gfile != NULL) {
+      jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, dw);
+      if (rank == 0) {
+        printf("S matrix computed for the specified input dataset\n");
+      }
     }
   }
 
