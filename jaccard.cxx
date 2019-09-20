@@ -314,7 +314,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       int len_bm = sizeof(bitmask) * 8;
       int64_t mm = (numpair + len_bm - 1) / len_bm;
 
-      Pair<bitmask> *colD = new Pair<bitmask>[mm * kmersInBatch];
+      Pair<bitmask> *colD = new Pair<bitmask>[mm * maxfiles];
 
       int64_t it_gIndex = 0;
       int64_t it_colD = 0;
