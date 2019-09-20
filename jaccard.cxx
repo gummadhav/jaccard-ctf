@@ -285,9 +285,11 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       }
       if (nkmersToWrite != 0) A.write(nkmersToWrite, gIndex.data(), gData.data());
       else A.write(0, nullptr);
-      printf("rank: %d gData.size(): %lld\n", dw.rank, gData.size());
       t_fileRead.stop();
       // A.print_matrix();
+      if (dw.rank == 0) {
+        printf("A constructed, batchNo: %lld\n", batchNo);
+      }
       gData.clear();
       nkmersToWrite = 0;
       // gData.shrink_to_fit(); // TODO: should we free the space?
@@ -299,6 +301,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       Vector<int> R(kmersInBatch, SP, dw);
       // pull out the non-zero rows
       R["i"] = A["ij"] * V["j"];
+      if (dw.rank == 0) {
+        printf("R computed, batchNo: %lld\n", batchNo);
+      }
       A.free_self();
       int64_t numpair;
       Pair<int> *vpairs;
@@ -352,9 +357,16 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         }
       }
       gIndex.clear();
+      if (dw.rank == 0) {
+        printf("Zero rows squashed, batchNo: %lld\n", batchNo);
+      }
       // gIndex.shrink_to_fit();
       Matrix<bitmask> J(mm, n, SP, dw, "J");
       J.write(it_colD, colD);
+      if (dw.rank == 0) {
+        printf("J constructed, batchNo: %lld\n", batchNo);
+      }
+      // gIndex.shrink_to_fit();
       // Predefining size to avoid reallocation/copy in push_back(); 
       // if there is imbalance of columns distributed across processes, the corner case should be handled
       t_squashZeroRows.stop();
@@ -376,6 +388,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       }
       if (dw.rank == 0) {
         printf("Batch: %lld done\n", batchNo);
+      }
+      if (dw.rank == 0) {
+        printf("Batch complete, batchNo: %lld\n", batchNo);
       }
       batchNo++;
       batchStart = batchNo * kmersInBatch;
