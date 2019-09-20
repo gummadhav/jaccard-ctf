@@ -228,6 +228,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
     Matrix<uint64_t> B(n, n, dw);
     Matrix<uint64_t> C(n, n, dw);
 
+    int64_t nkmersToWrite = 0;
+    std::vector<int64_t> gIndex;
+    std::vector<int> gData;
     // create matrix m X n
     while (batchNo < nbatch || lastBatch) {
       Timer t_fileRead("File read");
@@ -236,7 +239,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
 
       for (int64_t i = 0; i < maxfiles; i++) {
         if (i >= nfiles) {
-          A.write(0, nullptr);
+          // A.write(0, nullptr);
           continue;
         }
         // open the file for the first time
@@ -257,9 +260,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
           // printf("rank: %d file opened: %s\n", dw.rank, gfileTemp);
         }
 
-        int64_t nkmersToWrite = 0;
-        std::vector<int64_t> gIndex;
-        std::vector<int> gData;
         // If there was a last read kmer from the file
         if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
           gIndex.push_back(((lastkmer[i] - batchStart) + fileNo * kmersInBatch));
@@ -282,19 +282,24 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
             nkmersToWrite++;
           }
         }
-        if (nkmersToWrite != 0) A.write(nkmersToWrite, gIndex.data(), gData.data());
-        else A.write(0, nullptr);
       }
+      if (nkmersToWrite != 0) A.write(nkmersToWrite, gIndex.data(), gData.data());
+      else A.write(0, nullptr);
+      printf("rank: %d gData.size(): %lld\n", dw.rank, gData.size());
       t_fileRead.stop();
       // A.print_matrix();
+      gData.clear();
+      nkmersToWrite = 0;
+      // gData.shrink_to_fit(); // TODO: should we free the space?
 
       Timer t_squashZeroRows("Squash zero rows");
       t_squashZeroRows.start();
       Vector<int> V(n, dw);
-      V.fill_sp_random(1, 1, 1);
+      V.fill_random(1, 1);
       Vector<int> R(kmersInBatch, SP, dw);
       // pull out the non-zero rows
       R["i"] = A["ij"] * V["j"];
+      A.free_self();
       int64_t numpair;
       Pair<int> *vpairs;
       R.get_all_pairs(&numpair, &vpairs, true); // vpairs is duplicated across all processes
@@ -303,68 +308,61 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
 
       int len_bm = sizeof(bitmask) * 8;
       int64_t mm = (numpair + len_bm - 1) / len_bm;
-      Matrix<bitmask> J(mm, n, SP, dw, "J");
-      // Predefining size to avoid reallocation/copy in push_back(); 
-      // if there is imbalance of columns distributed across processes, the corner case should be handled
-      Pair<bitmask> *colD = new Pair<bitmask>[mm];
-      Pair<int> *colA = new Pair<int>[numpair];
-      // Update J in parallel; the remainder columns are then updated by process 0 alone
-      int rem_it = 0;
-      uint64_t numColsP = n / dw.np;
-      int64_t i = dw.rank; // Column index
-      int64_t columnsProcessed = 0;
-      while (rem_it < 2) {
-        for (; columnsProcessed < numColsP; columnsProcessed++) {
-          int64_t rowNo = 0; // To keep track of the new row number
-          // Read a column from Matrix A
-          int64_t j = 0; // Index into vpairs
-          while (j < numpair) {
-            colA[j].k = vpairs[j].k + i * kmersInBatch;
-            j++;
-          }
-          if (rem_it && dw.rank) A.read(0, nullptr); 
-          else A.read(j, colA);
-          j = 0;
-          while(j < numpair) {
-            // Store the mask[len_bm] in colD
-            bitmask mask = 0;
-            // for (int64_t l = 0; l < k; l++) {
-            int64_t l = 0;
-            while(j < numpair && l < len_bm) {
-              // TODO: can read only non-zero data
-              if(colA[j].d) {
-                // j = rowNo in J that the kmer should be in after squashing zero rows
-                mask = mask | ((bitmask)1) << ((j % kmersInBatch) % len_bm);
+
+      Pair<bitmask> *colD = new Pair<bitmask>[mm * kmersInBatch];
+
+      int64_t it_gIndex = 0;
+      int64_t it_colD = 0;
+      int64_t row_no;
+      int64_t col_no;
+      while (it_gIndex < gIndex.size()) {
+
+        // get the first row_no and col_no
+        row_no = gIndex[it_gIndex] % kmersInBatch;
+        col_no = gIndex[it_gIndex] / kmersInBatch;
+
+        int64_t j = 0;
+        int64_t row_no_J = 0;
+        while (1) { // Continue as long as in the same column
+          bitmask mask = 0;
+          int64_t l = 0;
+          while (j < numpair && l < len_bm) {
+            if (vpairs[j].k == row_no) {
+              // update mask
+              mask = mask | ((bitmask)1) << ((j % kmersInBatch) % len_bm);
+              // get new col_no
+              it_gIndex++;
+              if (it_gIndex < gIndex.size()) {
+                // Am I still in the same column ? continue : (continue till j < numpair) 
+                if ((gIndex[it_gIndex] / kmersInBatch) == col_no) {
+                  row_no = gIndex[it_gIndex] % kmersInBatch;
+                }
               }
-              l++; j++;
             }
-            colD[rowNo].d = mask;
-            colD[rowNo].k = rowNo + i * mm;
-            rowNo++;
+            j++; l++;
           }
-          if (!rem_it) {
-            i += dw.np;
-            J.write(mm, colD);
-          }
-          else {
-            i++;
-            if(dw.rank == 0) J.write(mm, colD);
-            else J.write(0, nullptr);
+          row_no_J++;
+          colD[it_colD].d = mask;
+          colD[it_colD].k = row_no_J + col_no * mm;
+          it_colD++;
+          if (j == numpair) break;
+          if (it_gIndex < gIndex.size()) {
+            if ((gIndex[it_gIndex] / kmersInBatch) != col_no) break;
           }
         }
-        // handle the remainder columns
-        int64_t rem = (n / dw.np) * dw.np;
-        i = rem;
-        columnsProcessed = rem;
-        numColsP = n;
-        rem_it++;
       }
+      gIndex.clear();
+      // gIndex.shrink_to_fit();
+      Matrix<bitmask> J(mm, n, SP, dw, "J");
+      J.write(it_colD, colD);
+      // Predefining size to avoid reallocation/copy in push_back(); 
+      // if there is imbalance of columns distributed across processes, the corner case should be handled
       t_squashZeroRows.stop();
+      
+      
       // J.print_matrix();
       // printf("rank: %d J.ncol: %lld J.nrow: %lld\n", dw.rank, J.ncol, J.nrow);
-      A.free_self();
       delete [] vpairs;
-      delete [] colA;
       delete [] colD;
       delete [] rowD;
       Timer t_jaccAcc("jaccard_acc");
@@ -375,6 +373,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       t_jaccAcc.stop();
       if (batchNo >= nbatch ) {
         lastBatch = false;
+      }
+      if (dw.rank == 0) {
+        printf("Batch: %lld done\n", batchNo);
       }
       batchNo++;
       batchStart = batchNo * kmersInBatch;
