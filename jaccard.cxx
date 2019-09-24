@@ -288,7 +288,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       t_fileRead.stop();
       // A.print_matrix();
       if (dw.rank == 0) {
-        printf("A constructed, batchNo: %lld\n", batchNo);
+        printf("A constructed, batchNo: %lld A.nnz_tot: %lld A.nrow: %lld\n", batchNo, A.nnz_tot, A.nrow);
       }
       gData.clear();
       nkmersToWrite = 0;
@@ -348,9 +348,11 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
             j++; l++;
           }
           row_no_J++;
-          colD[it_colD].d = mask;
-          colD[it_colD].k = row_no_J + col_no * mm;
-          it_colD++;
+          if (mask != 0) {
+            colD[it_colD].d = mask;
+            colD[it_colD].k = row_no_J + col_no * mm;
+            it_colD++;
+          }
           if (j == numpair) break;
           if (it_gIndex < gIndex.size()) {
             if ((gIndex[it_gIndex] / kmersInBatch) != col_no) break;
@@ -365,7 +367,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       Matrix<bitmask> J(mm, n, SP, dw, "J");
       J.write(it_colD, colD);
       if (dw.rank == 0) {
-        printf("J constructed, batchNo: %lld\n", batchNo);
+        printf("J constructed, batchNo: %lld J.nnz_tot: %lld J.nrow: %lld\n", batchNo, J.nnz_tot, J.nrow);
       }
       t_squashZeroRows.stop();
       
