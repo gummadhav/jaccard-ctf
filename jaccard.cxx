@@ -345,7 +345,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       int64_t numpair;
       Pair<int> *vpairs;
       stime = MPI_Wtime();
-      R["i"] = A["ij"] * V["j"];
       R.get_all_pairs(&numpair, &vpairs, true); // vpairs is duplicated across all processes
       if (dw.rank == 0) {
         etime = MPI_Wtime();
