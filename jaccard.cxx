@@ -265,7 +265,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
           char gfileTemp[10000];
           if (fplist != nullptr) {
             // Read files in lexicographic order
-            printf("Reading in lexicographic order\n");
             char dummy[9000];
             fscanf(fplist, "%s", dummy);
             sprintf(gfileTemp, "%s%s", gfile, dummy);
@@ -397,14 +396,16 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       }
       gIndex.clear();
       if (dw.rank == 0) {
-        printf("Zero rows squashed, batchNo: %lld\n", batchNo);
+        etime = MPI_Wtime();
+        printf("Zero rows squashed, batchNo: %lld time: %1.2lf\n", batchNo, (etime - stime));
       }
       // gIndex.shrink_to_fit(); // TODO: should we free this space?
+      stime = MPI_Wtime();
       Matrix<bitmask> J(mm, n, SP, dw, "J");
       J.write(it_colD, colD);
       if (dw.rank == 0) {
         etime = MPI_Wtime();
-        printf("J constructed, batchNo: %lld J.nnz_tot: %lld J.nrow: %lld time: %1.2lf\n", batchNo, J.nnz_tot, J.nrow, (etime - stime));
+        printf("J constructed, batchNo: %lld J.nnz_tot: %lld J.nrow: %lld J write time: %1.2lf\n", batchNo, J.nnz_tot, J.nrow, (etime - stime));
       }
       t_squashZeroRows.stop();
       
