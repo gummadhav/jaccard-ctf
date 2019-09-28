@@ -241,7 +241,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       Matrix<int> A(kmersInBatch, n, SP, dw, "hypersparse_A");
 
       FILE *fplist;
-      if (listfile != nullptr) {
+      if (listfile != nullptr && batchNo == 0) {
         fplist = fopen(listfile, "r");
         if (fplist == nullptr && dw.rank == 0) {
           printf("I am unable to open file: %s", listfile);
