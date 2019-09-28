@@ -335,15 +335,24 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       V.fill_random(1, 1);
       Vector<int> R(kmersInBatch, SP, dw);
       // pull out the non-zero rows
+      stime = MPI_Wtime();
       R["i"] = A["ij"] * V["j"];
       if (dw.rank == 0) {
-        printf("R computed, batchNo: %lld\n", batchNo);
+        etime = MPI_Wtime();
+        printf("R computed, batchNo: %lld R computation time: %1.2lf\n", batchNo, (etime - stime));
       }
       A.free_self();
       int64_t numpair;
       Pair<int> *vpairs;
+      stime = MPI_Wtime();
+      R["i"] = A["ij"] * V["j"];
       R.get_all_pairs(&numpair, &vpairs, true); // vpairs is duplicated across all processes
-
+      if (dw.rank == 0) {
+        etime = MPI_Wtime();
+        printf("R computed, batchNo: %lld R get_all_pairs() time: %1.2lf\n", batchNo, (etime - stime));
+      }
+      
+      stime = MPI_Wtime();
       Pair<int> * rowD = new Pair<int>[n];
 
       int len_bm = sizeof(bitmask) * 8;
