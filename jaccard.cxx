@@ -183,7 +183,7 @@ bool test_jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch){
 }
 
 template <typename bitmask>
-void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, World & dw)
+void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, const char *listfile, World & dw)
 {
     // range from 0 to (2^32 - 1)
     // nbatch should split the range
@@ -232,10 +232,26 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
     std::vector<int64_t> gIndex;
     std::vector<int> gData;
     // create matrix m X n
+    double stime;
+    double etime;
     while (batchNo < nbatch || lastBatch) {
       Timer t_fileRead("File read");
       t_fileRead.start();
+      stime = MPI_Wtime();
       Matrix<int> A(kmersInBatch, n, SP, dw, "hypersparse_A");
+
+      FILE *fplist;
+      if (listfile != nullptr) {
+        fplist = fopen(listfile, "r");
+        if (fplist == nullptr && dw.rank == 0) {
+          printf("I am unable to open file: %s", listfile);
+          MPI_Abort(MPI_COMM_WORLD, -1);
+        }
+        char dummy[9000];
+        for (int64_t i = 0; i < dw.rank; i++) {
+          fscanf(fplist, "%s", dummy);
+        }
+      }
 
       for (int64_t i = 0; i < maxfiles; i++) {
         if (i >= nfiles) {
@@ -245,13 +261,31 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         // open the file for the first time
         int64_t fileNo = (i * dw.np) + dw.rank;
         if (batchNo == 0) {
+          
           char gfileTemp[10000];
-          sprintf(gfileTemp, "%s.%lld.text.annodbg", gfile, fileNo);
-          // sprintf(gfileTemp, "%s_%lld", gfile, fileNo);
-          fp[i] = fopen(gfileTemp, "r");
-          if (fp[i] == nullptr) {
-            printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
-            MPI_Abort(MPI_COMM_WORLD, -1);
+          if (fplist != nullptr) {
+            // Read files in lexicographic order
+            printf("Reading in lexicographic order\n");
+            char dummy[9000];
+            fscanf(fplist, "%s", dummy);
+            sprintf(gfileTemp, "%s%s", gfile, dummy);
+            fp[i] = fopen(gfileTemp, "r");
+            if (fp[i] == nullptr) {
+              printf("I am rank: %d, I was unable to open file: %s", dw.rank, dummy);
+              MPI_Abort(MPI_COMM_WORLD, -1);
+            }
+            for (int64_t i = 0; i < (dw.np - 1); i++) {
+              fscanf(fplist, "%s", dummy);
+            }
+          }
+          else {
+            sprintf(gfileTemp, "%s.%lld.text.annodbg", gfile, fileNo);
+            // sprintf(gfileTemp, "%s_%lld", gfile, fileNo);
+            fp[i] = fopen(gfileTemp, "r");
+            if (fp[i] == nullptr) {
+              printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
+              MPI_Abort(MPI_COMM_WORLD, -1);
+            }
           }
           // reads to skip the first line
           int64_t dummy;
@@ -288,7 +322,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       t_fileRead.stop();
       // A.print_matrix();
       if (dw.rank == 0) {
-        printf("A constructed, batchNo: %lld A.nnz_tot: %lld A.nrow: %lld\n", batchNo, A.nnz_tot, A.nrow);
+        etime = MPI_Wtime();
+        printf("A constructed, batchNo: %lld A.nnz_tot: %lld A.nrow: %lld time: %1.2lf\n", batchNo, A.nnz_tot, A.nrow, (etime - stime));
       }
       gData.clear();
       nkmersToWrite = 0;
@@ -296,6 +331,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
 
       Timer t_squashZeroRows("Squash zero rows");
       t_squashZeroRows.start();
+      stime = MPI_Wtime();
       Vector<int> V(n, dw);
       V.fill_random(1, 1);
       Vector<int> R(kmersInBatch, SP, dw);
@@ -347,12 +383,12 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
             }
             j++; l++;
           }
-          row_no_J++;
           if (mask != 0) {
             colD[it_colD].d = mask;
             colD[it_colD].k = row_no_J + col_no * mm;
             it_colD++;
           }
+          row_no_J++;
           if (j == numpair) break;
           if (it_gIndex < gIndex.size()) {
             if ((gIndex[it_gIndex] / kmersInBatch) != col_no) break;
@@ -367,7 +403,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       Matrix<bitmask> J(mm, n, SP, dw, "J");
       J.write(it_colD, colD);
       if (dw.rank == 0) {
-        printf("J constructed, batchNo: %lld J.nnz_tot: %lld J.nrow: %lld\n", batchNo, J.nnz_tot, J.nrow);
+        etime = MPI_Wtime();
+        printf("J constructed, batchNo: %lld J.nnz_tot: %lld J.nrow: %lld time: %1.2lf\n", batchNo, J.nnz_tot, J.nrow, (etime - stime));
       }
       t_squashZeroRows.stop();
       
@@ -379,6 +416,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
       delete [] rowD;
       Timer t_jaccAcc("jaccard_acc");
       t_jaccAcc.start();
+      stime = MPI_Wtime();
       if (J.ncol != 0 || J.nrow != 0) {
         jaccard_acc(J, B, C);
       }
@@ -387,7 +425,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, Wor
         lastBatch = false;
       }
       if (dw.rank == 0) {
-        printf("Batch complete, batchNo: %lld\n", batchNo);
+        etime = MPI_Wtime();
+        printf("Batch complete, batchNo: %lld time for jaccard_acc(): %1.2lf\n", batchNo, (etime - stime));
       }
       batchNo++;
       batchStart = batchNo * kmersInBatch;
@@ -419,6 +458,7 @@ int main(int argc, char ** argv){
   int const in_num = argc;
   char ** input_str = argv;
   char *gfile = NULL;
+  char *listfile = nullptr;
 
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -450,8 +490,12 @@ int main(int argc, char ** argv){
        gfile = getCmdOption(input_str, input_str+in_num, "-f");
      } else gfile = NULL;
     
+    if (getCmdOption(input_str, input_str+in_num, "-lfile")) {
+       listfile = getCmdOption(input_str, input_str+in_num, "-lfile");
+     } else listfile = nullptr;
+    
     if (gfile != NULL) {
-      jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, dw);
+      jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, listfile, dw);
       if (rank == 0) {
         printf("S matrix computed for the specified input dataset\n");
       }
