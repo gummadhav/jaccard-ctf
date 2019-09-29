@@ -215,6 +215,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     int64_t batchNo = 0;
     int64_t batchStart = batchNo * kmersInBatch;
     int64_t batchEnd = (batchNo + 1) * kmersInBatch - 1;
+    if (batchEnd > m) batchEnd = m - 1;
     // printf("rank: %d nfiles: %lld\n", dw.rank, nfiles);
 
     // To handle a case where m is not exactly divisible by nbatch
@@ -230,15 +231,23 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
 
     int64_t nkmersToWrite = 0;
     std::vector<int64_t> gIndex;
-    std::vector<int> gData;
     // create matrix m X n
     double stime;
     double etime;
+    Semiring<int> sr(0,
+                     [](int a, int b) { return std::max(a, b); },
+                     MPI_MAX,
+                     1,
+                     [](int a, int b) { return a * b; });
     while (batchNo < nbatch || lastBatch) {
       Timer t_fileRead("File read");
       t_fileRead.start();
       stime = MPI_Wtime();
-      Matrix<int> A(kmersInBatch, n, SP, dw, "hypersparse_A");
+      Vector<int> R(kmersInBatch, SP, dw, sr);
+      
+      std::vector<int> rFlag(kmersInBatch, 0);
+      std::vector<int64_t> rIndex;
+      std::vector<int> rData;
 
       FILE *fplist;
       if (listfile != nullptr && batchNo == 0) {
@@ -296,63 +305,67 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         // If there was a last read kmer from the file
         if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
           gIndex.push_back(((lastkmer[i] - batchStart) + fileNo * kmersInBatch));
-          gData.push_back(1);
-          nkmersToWrite++;
+          int64_t r_row_no = lastkmer[i] - batchStart;
+          if (!rFlag[r_row_no]) {
+            rIndex.push_back(r_row_no);
+            rData.push_back(1);
+            rFlag[r_row_no] = 1;
+            nkmersToWrite++;
+          }
           lastkmer[i] = -1;
         }
         int64_t kmer;
         // read the file till batchEnd or the end of file
-        // don't read the file if the previous read kmer itself is not being processed this batch
+        // don't read the file if the previous read kmer was not processed in this batch
         if (lastkmer[i] == -1) {
           while (fscanf(fp[i], "%lld", &kmer) != EOF) {
-            if (kmer > batchEnd && !(lastBatch && batchNo >= nbatch)) {
+            if (kmer > batchEnd) {
               lastkmer[i] = kmer;
               break;
             }
             // write kmer to A
+            // TODO: since we no longer use A, we can re read the file when constructing the i/p matrix instead of storing the kmers
             gIndex.push_back(((kmer - batchStart) + fileNo * kmersInBatch));
-            gData.push_back(1);
-            nkmersToWrite++;
+            
+            int64_t r_row_no = kmer - batchStart;
+            // printf("fileNo: %lld kmer: %lld batchStart: %lld batchEnd: %lld r_row_no: %lld batchNo: %lld lastBatch: %d\n", fileNo, kmer, batchStart, batchEnd, r_row_no, batchNo, lastBatch);
+            assert(r_row_no < kmersInBatch);
+            if (!rFlag[r_row_no]) {
+              rIndex.push_back(r_row_no);
+              rData.push_back(1);
+              rFlag[r_row_no] = 1;
+              nkmersToWrite++;
+            }
           }
         }
       }
-      if (nkmersToWrite != 0) A.write(nkmersToWrite, gIndex.data(), gData.data());
-      else A.write(0, nullptr);
       t_fileRead.stop();
-      A.print_matrix();
+     
+      if (compress) { 
+        if (nkmersToWrite != 0) R.write(nkmersToWrite, rIndex.data(), rData.data());
+        else R.write(0, nullptr);
+      }
+      // R.print();
       if (dw.rank == 0) {
         etime = MPI_Wtime();
-        printf("A constructed, batchNo: %lld A.nnz_tot: %lld A.nrow: %lld time: %1.2lf\n", batchNo, A.nnz_tot, A.nrow, (etime - stime));
+        // printf("A constructed, batchNo: %lld A.nnz_tot: %lld A.nrow: %lld time: %1.2lf\n", batchNo, A.nnz_tot, A.nrow, (etime - stime));
+        printf("read k-mers, batchNo: %lld non_zero_rows: %lld time: %1.2lf\n", batchNo, nkmersToWrite, (etime - stime));
       }
-      gData.clear();
       nkmersToWrite = 0;
-      // gData.shrink_to_fit(); // TODO: should we free the space?
 
       int64_t numpair = 0;
       Pair<int> *vpairs = nullptr;
       Timer t_squashZeroRows("Squash zero rows");
+      t_squashZeroRows.start();
       if (!compress) {
         numpair = kmersInBatch;
       }
       else {
-        t_squashZeroRows.start();
-        stime = MPI_Wtime();
-        Vector<int> V(n, dw);
-        V.fill_random(1, 1);
-        Vector<int> R(kmersInBatch, SP, dw);
-        // pull out the non-zero rows
-        stime = MPI_Wtime();
-        R["i"] = A["ij"] * V["j"];
-        if (dw.rank == 0) {
-          etime = MPI_Wtime();
-          printf("R computed, batchNo: %lld R computation time: %1.2lf\n", batchNo, (etime - stime));
-        }
-        A.free_self();
         stime = MPI_Wtime();
         R.get_all_pairs(&numpair, &vpairs, true); // vpairs is duplicated across all processes
         if (dw.rank == 0) {
           etime = MPI_Wtime();
-          printf("R computed, batchNo: %lld R get_all_pairs() numpair: %lld time: %1.2lf\n", batchNo, numpair, (etime - stime));
+          printf("R computed, batchNo: %lld numpair: %lld time: %1.2lf\n", batchNo, numpair, (etime - stime));
         }
       }
 
@@ -384,7 +397,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
             if ((!compress && j == row_no) || (compress && vpairs[j].k == row_no)) {
               // update mask
               mask = mask | ((bitmask)1) << ((j % kmersInBatch) % len_bm);
-              // printf("j: %lld l: %lld mask: %ld\n", j, l, mask);
               // get new col_no
               it_gIndex++;
               if (it_gIndex < gIndex.size()) {
@@ -414,7 +426,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       gIndex.clear();
       if (dw.rank == 0) {
         etime = MPI_Wtime();
-        printf("Zero rows squashed, batchNo: %lld time: %1.2lf\n", batchNo, (etime - stime));
+        printf("masks created with zero rows removed if compression is enabled, batchNo: %lld time: %1.2lf\n", batchNo, (etime - stime));
       }
       // gIndex.shrink_to_fit(); // TODO: should we free this space?
       stime = MPI_Wtime();
@@ -427,8 +439,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       t_squashZeroRows.stop();
       
       
-      J.print_matrix();
-      printf("rank: %d J.ncol: %lld J.nrow: %lld\n", dw.rank, J.ncol, J.nrow);
+      // J.print_matrix();
       delete [] vpairs;
       delete [] colD;
       delete [] rowD;
@@ -439,9 +450,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         jaccard_acc(J, B, C);
       }
       t_jaccAcc.stop();
-      if (batchNo >= nbatch ) {
-        lastBatch = false;
-      }
       if (dw.rank == 0) {
         etime = MPI_Wtime();
         printf("Batch complete, batchNo: %lld time for jaccard_acc(): %1.2lf\n", batchNo, (etime - stime));
@@ -449,6 +457,10 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       batchNo++;
       batchStart = batchNo * kmersInBatch;
       batchEnd = (batchNo + 1) * kmersInBatch - 1;
+      if (batchEnd > m) batchEnd = m - 1;
+      if (batchNo > nbatch ) {
+        lastBatch = false;
+      }
     }
     Timer t_computeS("Compute S");
     t_computeS.start();
