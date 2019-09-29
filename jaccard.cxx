@@ -365,7 +365,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         R.get_all_pairs(&numpair, &vpairs, true); // vpairs is duplicated across all processes
         if (dw.rank == 0) {
           etime = MPI_Wtime();
-          printf("R computed, batchNo: %lld numpair: %lld time: %1.2lf\n", batchNo, numpair, (etime - stime));
+          printf("R.get_all_pairs(), batchNo: %lld numpair: %lld time: %1.2lf\n", batchNo, numpair, (etime - stime));
         }
       }
 
@@ -428,7 +428,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         etime = MPI_Wtime();
         printf("masks created with zero rows removed if compression is enabled, batchNo: %lld time: %1.2lf\n", batchNo, (etime - stime));
       }
-      // gIndex.shrink_to_fit(); // TODO: should we free this space?
+      gIndex.shrink_to_fit(); // TODO: should we free this space?
       stime = MPI_Wtime();
       Matrix<bitmask> J(mm, n, SP, dw, "J");
       J.write(it_colD, colD);
