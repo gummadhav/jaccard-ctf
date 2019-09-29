@@ -183,7 +183,7 @@ bool test_jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch){
 }
 
 template <typename bitmask>
-void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, const char *listfile, World & dw)
+void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, const char *listfile, int compress, World & dw)
 {
     // range from 0 to (2^32 - 1)
     // nbatch should split the range
@@ -319,7 +319,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       if (nkmersToWrite != 0) A.write(nkmersToWrite, gIndex.data(), gData.data());
       else A.write(0, nullptr);
       t_fileRead.stop();
-      // A.print_matrix();
+      A.print_matrix();
       if (dw.rank == 0) {
         etime = MPI_Wtime();
         printf("A constructed, batchNo: %lld A.nnz_tot: %lld A.nrow: %lld time: %1.2lf\n", batchNo, A.nnz_tot, A.nrow, (etime - stime));
@@ -328,29 +328,34 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       nkmersToWrite = 0;
       // gData.shrink_to_fit(); // TODO: should we free the space?
 
+      int64_t numpair = 0;
+      Pair<int> *vpairs = nullptr;
       Timer t_squashZeroRows("Squash zero rows");
-      t_squashZeroRows.start();
-      stime = MPI_Wtime();
-      Vector<int> V(n, dw);
-      V.fill_random(1, 1);
-      Vector<int> R(kmersInBatch, SP, dw);
-      // pull out the non-zero rows
-      stime = MPI_Wtime();
-      R["i"] = A["ij"] * V["j"];
-      if (dw.rank == 0) {
-        etime = MPI_Wtime();
-        printf("R computed, batchNo: %lld R computation time: %1.2lf\n", batchNo, (etime - stime));
+      if (!compress) {
+        numpair = kmersInBatch;
       }
-      A.free_self();
-      int64_t numpair;
-      Pair<int> *vpairs;
-      stime = MPI_Wtime();
-      R.get_all_pairs(&numpair, &vpairs, true); // vpairs is duplicated across all processes
-      if (dw.rank == 0) {
-        etime = MPI_Wtime();
-        printf("R computed, batchNo: %lld R get_all_pairs() time: %1.2lf\n", batchNo, (etime - stime));
+      else {
+        t_squashZeroRows.start();
+        stime = MPI_Wtime();
+        Vector<int> V(n, dw);
+        V.fill_random(1, 1);
+        Vector<int> R(kmersInBatch, SP, dw);
+        // pull out the non-zero rows
+        stime = MPI_Wtime();
+        R["i"] = A["ij"] * V["j"];
+        if (dw.rank == 0) {
+          etime = MPI_Wtime();
+          printf("R computed, batchNo: %lld R computation time: %1.2lf\n", batchNo, (etime - stime));
+        }
+        A.free_self();
+        stime = MPI_Wtime();
+        R.get_all_pairs(&numpair, &vpairs, true); // vpairs is duplicated across all processes
+        if (dw.rank == 0) {
+          etime = MPI_Wtime();
+          printf("R computed, batchNo: %lld R get_all_pairs() numpair: %lld time: %1.2lf\n", batchNo, numpair, (etime - stime));
+        }
       }
-      
+
       stime = MPI_Wtime();
       Pair<int> * rowD = new Pair<int>[n];
 
@@ -376,15 +381,19 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
           bitmask mask = 0;
           int64_t l = 0;
           while (j < numpair && l < len_bm) {
-            if (vpairs[j].k == row_no) {
+            if ((!compress && j == row_no) || (compress && vpairs[j].k == row_no)) {
               // update mask
               mask = mask | ((bitmask)1) << ((j % kmersInBatch) % len_bm);
+              // printf("j: %lld l: %lld mask: %ld\n", j, l, mask);
               // get new col_no
               it_gIndex++;
               if (it_gIndex < gIndex.size()) {
-                // Am I still in the same column ? continue : (continue till j < numpair) 
+                // Am I still in the same column ? continue
                 if ((gIndex[it_gIndex] / kmersInBatch) == col_no) {
                   row_no = gIndex[it_gIndex] % kmersInBatch;
+                }
+                else {
+                  break;
                 }
               }
             }
@@ -418,8 +427,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       t_squashZeroRows.stop();
       
       
-      // J.print_matrix();
-      // printf("rank: %d J.ncol: %lld J.nrow: %lld\n", dw.rank, J.ncol, J.nrow);
+      J.print_matrix();
+      printf("rank: %d J.ncol: %lld J.nrow: %lld\n", dw.rank, J.ncol, J.nrow);
       delete [] vpairs;
       delete [] colD;
       delete [] rowD;
@@ -468,6 +477,7 @@ int main(int argc, char ** argv){
   char ** input_str = argv;
   char *gfile = NULL;
   char *listfile = nullptr;
+  int compress;
 
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -503,8 +513,12 @@ int main(int argc, char ** argv){
        listfile = getCmdOption(input_str, input_str+in_num, "-lfile");
      } else listfile = nullptr;
     
+    if (getCmdOption(input_str, input_str+in_num, "-compress")) {
+       compress = atoi(getCmdOption(input_str, input_str+in_num, "-compress"));
+     } else compress = 0;
+    
     if (gfile != NULL) {
-      jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, listfile, dw);
+      jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, listfile, compress, dw);
       if (rank == 0) {
         printf("S matrix computed for the specified input dataset\n");
       }
