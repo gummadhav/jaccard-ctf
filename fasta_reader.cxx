@@ -15,7 +15,7 @@
 
 using namespace CTF;
 
-void process_fasta_files(int64_t m, int64_t n, int64_t k, char *infolderPath, char *outfolderPath, const char *listfile, double *perc, World & dw)
+void process_fasta_files(int64_t m, int64_t n, int64_t k, char *infolderPath, char *outfolderPath, const char *listfile, double *perc, int reverse_complement, World & dw)
 {
   // nfiles: number of files this MPI process handles
   int64_t nfiles;
@@ -24,9 +24,11 @@ void process_fasta_files(int64_t m, int64_t n, int64_t k, char *infolderPath, ch
   // max files are handled by rank 0
   // variable used to sync A.write()s across processes
   maxfiles = (n / dw.np) + (0 < (n % dw.np));
-  int64_t maxkmer = *perc * m;
+  uint64_t maxkmer = *perc * m;
 
   std::map<char, int> atgc = {{'A', 0}, {'C', 1}, {'G', 2}, {'T', 3}};
+  // reverse_complement A->T, C->G, G->C, T->A
+  std::map<char, int> atgc_reverse = {{'A', 3}, {'C', 2}, {'G', 1}, {'T', 0}};
   FILE *fplist;
   if (listfile != nullptr) {
     fplist = fopen(listfile, "r");
@@ -46,7 +48,7 @@ void process_fasta_files(int64_t m, int64_t n, int64_t k, char *infolderPath, ch
       continue;
     }
 
-    std::set<int64_t> kmers;
+    std::set<uint64_t> kmers;
     if (fplist != nullptr) {
       // Read files in lexicographic order
       char dummy[9000];
@@ -77,17 +79,30 @@ void process_fasta_files(int64_t m, int64_t n, int64_t k, char *infolderPath, ch
       //Iterate lines
       std::string line;
       std::string pline;
-      int64_t ik = 0;
-      int64_t kmerv = 0;
+      uint64_t ik = 0;
+      uint64_t kmerv = 0;
+      // can do away without a base; but the code is easier to understand this way
+      uint64_t kmerv_b = 4;
       std::map<char, int>::iterator it;
       std::string::size_type il;
+      bool process_rev_complement = false;
       while (std::getline(instream, line)) {
         // std::cout << line << std::endl;
-        if (line.find("unitig") != std::string::npos) {
+        if (line.find(">") != std::string::npos) {
           // header found, process a new read
           ik = 0;
-          kmerv = 0;
-          continue;
+          kmerv = 0; kmerv_b = 4;
+          if (reverse_complement) {
+            // process reverse_complement; the string can be from two separate lines without the delimiter 
+            if (pline.size() == 0) continue;
+            // std::reverse(pline.begin(), pline.end());
+            line = pline;
+            std::cout << "reverse: " << line << std::endl;
+            process_rev_complement = true;
+          }
+          else {
+            continue;
+          }
         }
         if (ik != 0) {
           // new line, but not separated by a header, so the read continues
@@ -99,20 +114,26 @@ void process_fasta_files(int64_t m, int64_t n, int64_t k, char *infolderPath, ch
           il = 0;
         }
         for(; il < line.size(); il++) {
-          it = atgc.find(toupper(line[il]));
-          if (it != atgc.end()) {
-            kmerv *= 4;
-            kmerv += it->second;
+          if (!process_rev_complement) {
+            it = atgc.find(toupper(line[il]));
+          }
+          else {
+            it = atgc_reverse.find(toupper(line[il]));
+          }
+          if ((it != atgc.end() && !process_rev_complement) || (it !=atgc_reverse.end() && process_rev_complement)) {
+            kmerv += kmerv_b * it->second;
+            kmerv_b *= 4;
+            //printf("kmerv: %lld char: %c val: %d\n", kmerv, line[il], it->second);
             ik++;
             if (ik == k) {
               // store the k-mer value
               // std::cout << kmerv << endl;
-              if (kmerv <= maxkmer) {
+              //if (kmerv <= maxkmer) {
                 // wfile << kmerv << "\n";
                 kmers.insert(kmerv);
-              }
+              //}
               ik = 0;
-              kmerv = 0;
+              kmerv = 0; kmerv_b = 4;
               il = il - (k - 1);
               assert (il >= 0);
             }
@@ -120,12 +141,18 @@ void process_fasta_files(int64_t m, int64_t n, int64_t k, char *infolderPath, ch
           else {
             // found a non-atgc character
             ik = 0;
-            kmerv = 0;
+            kmerv = 0; kmerv_b = 4;
           }
         }
         // store this line as the previous line
         pline = line;
+        if (process_rev_complement == true) {
+          process_rev_complement = false;
+          ik = 0;
+          kmerv = 0; kmerv_b = 4;
+        }
       }
+      printf("kmers.size(): %lld\n", kmers.size());
       // write the kmers
       for(auto const& value: kmers) {
         wfile << value << "\n";
@@ -159,6 +186,7 @@ int main(int argc, char ** argv){
   char *infolderPath = nullptr;
   char *outfolderPath = nullptr;
   char *listfile = nullptr;
+  int reverse_complement;
 
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -198,12 +226,17 @@ int main(int argc, char ** argv){
        outfolderPath = getCmdOption(input_str, input_str+in_num, "-outfolderPath");
      } else outfolderPath = nullptr;
     
+    if (getCmdOption(input_str, input_str+in_num, "-reverse_complement")){
+      reverse_complement = atoi(getCmdOption(input_str, input_str+in_num, "-reverse_complement"));
+      if (reverse_complement < 0) reverse_complement = 0;
+    } else reverse_complement = 0;
+    
     if ((listfile == nullptr || infolderPath == nullptr || outfolderPath == nullptr) && rank == 0) {
       printf("Error in the command line parameters");
       fflush(stdout);
       MPI_Abort(MPI_COMM_WORLD, -2);
     }
-    process_fasta_files(m, n, k, infolderPath, outfolderPath, listfile, &perc, dw);
+    process_fasta_files(m, n, k, infolderPath, outfolderPath, listfile, &perc, reverse_complement, dw);
   }
   MPI_Finalize();
 }
