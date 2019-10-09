@@ -183,7 +183,7 @@ bool test_jaccard_calc_random(int64_t m, int64_t n, double p, int64_t nbatch){
 }
 
 template <typename bitmask>
-void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, const char *listfile, int compress, World & dw)
+void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, const char *listfile, int compress, int64_t miniBatchSize, World & dw)
 {
     // range from 0 to (2^32 - 1)
     // nbatch should split the range
@@ -229,6 +229,12 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     Matrix<uint64_t> B(n, n, dw);
     Matrix<uint64_t> C(n, n, dw);
 
+    std::vector<bool> rFlag(miniBatchSize);
+    for (int64_t f = 0; f < miniBatchSize; f++) rFlag[f] = false;
+    std::vector<int64_t> rIndex;
+    std::vector<int> rData;
+    std::vector<int> maxkmerReached(nfiles);
+    for (int64_t f = 0; f < nfiles; f++) maxkmerReached[f] = false;
     int64_t nkmersToWrite = 0;
     std::vector<int64_t> gIndex;
     // create matrix m X n
@@ -240,14 +246,12 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
                      1,
                      [](int a, int b) { return a * b; });
     while (batchNo < nbatch || lastBatch) {
+      printf("batchNo: %lld\n", batchNo);
       Timer t_fileRead("File read");
       t_fileRead.start();
       stime = MPI_Wtime();
       Vector<int> R(kmersInBatch, SP, dw, sr);
       
-      std::vector<int> rFlag(kmersInBatch, 0);
-      std::vector<int64_t> rIndex;
-      std::vector<int> rData;
 
       FILE *fplist;
       if (listfile != nullptr && batchNo == 0) {
@@ -262,89 +266,132 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         }
       }
 
-      for (int64_t i = 0; i < maxfiles; i++) {
-        if (i >= nfiles) {
-          // A.write(0, nullptr);
-          continue;
-        }
-        // open the file for the first time
-        int64_t fileNo = (i * dw.np) + dw.rank;
-        if (batchNo == 0) {
-          
-          char gfileTemp[10000];
-          if (fplist != nullptr) {
-            // Read files in lexicographic order
-            char dummy[9000];
-            fscanf(fplist, "%s", dummy);
-            sprintf(gfileTemp, "%s%s", gfile, dummy);
-            fp[i] = fopen(gfileTemp, "r");
-            if (fp[i] == nullptr) {
-              printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
-              MPI_Abort(MPI_COMM_WORLD, -1);
-            }
-            for (int64_t i = 0; i < (dw.np - 1); i++) {
+      
+      int64_t mbi = 0;
+      while (1) {
+        int64_t miniBatchEnd = (mbi + 1) * miniBatchSize - 1;
+        int64_t miniBatchStart = mbi * miniBatchSize;
+
+        for (int64_t i = 0; i < maxfiles; i++) {
+          if (i >= nfiles) {
+            // A.write(0, nullptr);
+            continue;
+          }
+          // open the file for the first time
+          int64_t fileNo = (i * dw.np) + dw.rank;
+          if (batchNo == 0 && mbi == 0) {
+
+            char gfileTemp[10000];
+            if (fplist != nullptr) {
+              // Read files in lexicographic order
+              char dummy[9000];
               fscanf(fplist, "%s", dummy);
+              sprintf(gfileTemp, "%s%s", gfile, dummy);
+              fp[i] = fopen(gfileTemp, "r");
+              if (fp[i] == nullptr) {
+                printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
+                MPI_Abort(MPI_COMM_WORLD, -1);
+              }
+              for (int64_t i = 0; i < (dw.np - 1); i++) {
+                fscanf(fplist, "%s", dummy);
+              }
+            }
+            else {
+              sprintf(gfileTemp, "%s.%lld.text.annodbg", gfile, fileNo);
+              // sprintf(gfileTemp, "%s_%lld", gfile, fileNo);
+              fp[i] = fopen(gfileTemp, "r");
+              if (fp[i] == nullptr) {
+                printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
+                MPI_Abort(MPI_COMM_WORLD, -1);
+              }
+            }
+            // reads to skip the first line
+            int64_t dummy;
+            fscanf(fp[i], "%lld", &dummy);
+            fscanf(fp[i], "%lld", &dummy);
+            // printf("rank: %d file opened: %s\n", dw.rank, gfileTemp);
+          }
+
+          // If there was a last read kmer from the file
+          if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
+            gIndex.push_back(((lastkmer[i] - batchStart) + fileNo * kmersInBatch));
+            int64_t r_row_no = lastkmer[i] - batchStart;
+            if (rFlag[r_row_no - miniBatchStart] == false) {
+              rIndex.push_back(r_row_no);
+              rData.push_back(1);
+              rFlag[r_row_no - miniBatchStart] = true;
+              nkmersToWrite++;
+            }
+            lastkmer[i] = -1;
+          }
+          int64_t kmer = -1;
+          // read the file till batchEnd or the end of file
+          // don't read the file if the previous read kmer was not processed in this batch
+          if (lastkmer[i] == -1) {
+            while (fscanf(fp[i], "%lld", &kmer) != EOF) {
+              if (kmer > batchEnd) {
+                lastkmer[i] = kmer;
+                maxkmerReached[i] = true;
+                break;
+              }
+              // write kmer to A
+              // TODO: since we no longer use A, we can re read the file when constructing the i/p matrix instead of storing the kmers
+              gIndex.push_back(((kmer - batchStart) + fileNo * kmersInBatch));
+              int64_t r_row_no = kmer - batchStart;
+              assert(r_row_no < kmersInBatch);
+
+              if (r_row_no > miniBatchEnd) {
+                // I still need to store the kmer for write; only rFlag will not be valid
+                rIndex.push_back(r_row_no);
+                rData.push_back(1);
+                rFlag[r_row_no - miniBatchStart] = true;
+                nkmersToWrite++;
+                break;
+              }
+              assert ((r_row_no - miniBatchStart) < miniBatchSize);
+              if (rFlag[r_row_no - miniBatchStart] == false) {
+                rIndex.push_back(r_row_no);
+                rData.push_back(1);
+                rFlag[r_row_no - miniBatchStart] = true;
+                nkmersToWrite++;
+              } 
+            }
+            if (kmer == -1) {
+              maxkmerReached[i] = true;
             }
           }
           else {
-            sprintf(gfileTemp, "%s.%lld.text.annodbg", gfile, fileNo);
-            // sprintf(gfileTemp, "%s_%lld", gfile, fileNo);
-            fp[i] = fopen(gfileTemp, "r");
-            if (fp[i] == nullptr) {
-              printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
-              MPI_Abort(MPI_COMM_WORLD, -1);
-            }
+            // had reached the maxkmer for this file in the previous batch
+            maxkmerReached[i] = true;
           }
-          // reads to skip the first line
-          int64_t dummy;
-          fscanf(fp[i], "%lld", &dummy);
-          fscanf(fp[i], "%lld", &dummy);
-          // printf("rank: %d file opened: %s\n", dw.rank, gfileTemp);
         }
+        if (compress) { 
+          if (nkmersToWrite != 0) R.write(nkmersToWrite, rIndex.data(), rData.data());
+          else R.write(0, nullptr);
+          nkmersToWrite = 0;
 
-        // If there was a last read kmer from the file
-        if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
-          gIndex.push_back(((lastkmer[i] - batchStart) + fileNo * kmersInBatch));
-          int64_t r_row_no = lastkmer[i] - batchStart;
-          if (!rFlag[r_row_no]) {
-            rIndex.push_back(r_row_no);
-            rData.push_back(1);
-            rFlag[r_row_no] = 1;
-            nkmersToWrite++;
-          }
-          lastkmer[i] = -1;
+          if (rIndex.size() > 0) rIndex.clear();
+          if (rData.size() > 0) rData.clear();
+          for (int64_t f = 0; f < miniBatchSize; f++) rFlag[f] = false;
+          // rIndex.shrink_to_fit();
+          // rData.shrink_to_fit();
+          // rFlag.shrink_to_fit();
         }
-        int64_t kmer;
-        // read the file till batchEnd or the end of file
-        // don't read the file if the previous read kmer was not processed in this batch
-        if (lastkmer[i] == -1) {
-          while (fscanf(fp[i], "%lld", &kmer) != EOF) {
-            if (kmer > batchEnd) {
-              lastkmer[i] = kmer;
-              break;
-            }
-            // write kmer to A
-            // TODO: since we no longer use A, we can re read the file when constructing the i/p matrix instead of storing the kmers
-            gIndex.push_back(((kmer - batchStart) + fileNo * kmersInBatch));
-            
-            int64_t r_row_no = kmer - batchStart;
-            // printf("fileNo: %lld kmer: %lld batchStart: %lld batchEnd: %lld r_row_no: %lld batchNo: %lld lastBatch: %d\n", fileNo, kmer, batchStart, batchEnd, r_row_no, batchNo, lastBatch);
-            assert(r_row_no < kmersInBatch);
-            if (!rFlag[r_row_no]) {
-              rIndex.push_back(r_row_no);
-              rData.push_back(1);
-              rFlag[r_row_no] = 1;
-              nkmersToWrite++;
-            }
+        // break away totally when all the files have their kmer > batchEnd
+        int64_t mkr = 0;
+        for (; mkr < nfiles; mkr++) {
+          if (maxkmerReached[mkr] == false) {
+            break;
           }
         }
+        if (mkr == nfiles) {
+          for (int64_t f = 0; f < nfiles; f++) maxkmerReached[f] = false;
+          break;
+        }
+        mbi++;
       }
       t_fileRead.stop();
      
-      if (compress) { 
-        if (nkmersToWrite != 0) R.write(nkmersToWrite, rIndex.data(), rData.data());
-        else R.write(0, nullptr);
-      }
       // R.print();
       if (dw.rank == 0) {
         etime = MPI_Wtime();
@@ -428,7 +475,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         etime = MPI_Wtime();
         printf("masks created with zero rows removed if compression is enabled, batchNo: %lld time: %1.2lf\n", batchNo, (etime - stime));
       }
-      gIndex.shrink_to_fit(); // TODO: should we free this space?
+      // gIndex.shrink_to_fit(); // TODO: should we free this space?
       stime = MPI_Wtime();
       Matrix<bitmask> J(mm, n, SP, dw, "J");
       J.write(it_colD, colD);
@@ -490,6 +537,8 @@ int main(int argc, char ** argv){
   char *gfile = NULL;
   char *listfile = nullptr;
   int compress;
+  // would roughly take up around 300MB per node
+  int64_t miniBatchSize = 10000000; 
 
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -516,6 +565,11 @@ int main(int argc, char ** argv){
       nbatch = atoll(getCmdOption(input_str, input_str+in_num, "-nbatch"));
       if (nbatch < 0) nbatch = 1;
     } else nbatch = 1;
+    
+    if (getCmdOption(input_str, input_str+in_num, "-minibatch")){
+      miniBatchSize = atoi(getCmdOption(input_str, input_str+in_num, "-minibatch"));
+      if (miniBatchSize < 0) miniBatchSize = 10000000;
+    } else miniBatchSize = 10000000;
 
     if (getCmdOption(input_str, input_str+in_num, "-f")) {
        gfile = getCmdOption(input_str, input_str+in_num, "-f");
@@ -530,7 +584,7 @@ int main(int argc, char ** argv){
      } else compress = 0;
     
     if (gfile != NULL) {
-      jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, listfile, compress, dw);
+      jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, listfile, compress, miniBatchSize, dw);
       if (rank == 0) {
         printf("S matrix computed for the specified input dataset\n");
       }
