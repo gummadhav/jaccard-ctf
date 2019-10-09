@@ -233,7 +233,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     for (int64_t f = 0; f < miniBatchSize; f++) rFlag[f] = false;
     std::vector<int64_t> rIndex;
     std::vector<int> rData;
-    std::vector<int> maxkmerReached(nfiles);
+    std::vector<bool> maxkmerReached(nfiles);
     for (int64_t f = 0; f < nfiles; f++) maxkmerReached[f] = false;
     int64_t nkmersToWrite = 0;
     std::vector<int64_t> gIndex;
