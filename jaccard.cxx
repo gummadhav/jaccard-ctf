@@ -245,7 +245,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       stime = MPI_Wtime();
       Vector<int> R(kmersInBatch, SP, dw, sr);
       
-      std::vector<int> rFlag(kmersInBatch, 0);
       std::vector<int64_t> rIndex;
       std::vector<int> rData;
 
@@ -308,12 +307,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
           gIndex.push_back(std::pair<int64_t, int64_t>(lastkmer[i] - batchStart, fileNo));
           int64_t r_row_no = lastkmer[i] - batchStart;
-          if (!rFlag[r_row_no]) {
-            rIndex.push_back(r_row_no);
-            rData.push_back(1);
-            rFlag[r_row_no] = 1;
-            nkmersToWrite++;
-          }
+          rIndex.push_back(r_row_no);
+          rData.push_back(1);
+          nkmersToWrite++;
           lastkmer[i] = -1;
         }
         int64_t kmer;
@@ -332,12 +328,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
             int64_t r_row_no = kmer - batchStart;
             // printf("fileNo: %lld kmer: %lld batchStart: %lld batchEnd: %lld r_row_no: %lld batchNo: %lld lastBatch: %d\n", fileNo, kmer, batchStart, batchEnd, r_row_no, batchNo, lastBatch);
             assert(r_row_no < kmersInBatch);
-            if (!rFlag[r_row_no]) {
-              rIndex.push_back(r_row_no);
-              rData.push_back(1);
-              rFlag[r_row_no] = 1;
-              nkmersToWrite++;
-            }
+            rIndex.push_back(r_row_no);
+            rData.push_back(1);
+            nkmersToWrite++;
           }
         }
       }
