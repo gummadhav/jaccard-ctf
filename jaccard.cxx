@@ -230,7 +230,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     Matrix<uint64_t> C(n, n, dw);
 
     int64_t nkmersToWrite = 0;
-    std::vector<int64_t> gIndex;
+    std::vector< std::pair<int64_t, int64_t> > gIndex;
     // create matrix m X n
     double stime;
     double etime;
@@ -254,6 +254,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         fplist = fopen(listfile, "r");
         if (fplist == nullptr && dw.rank == 0) {
           printf("I am unable to open file: %s", listfile);
+          fflush(stdout);
           MPI_Abort(MPI_COMM_WORLD, -1);
         }
         char dummy[9000];
@@ -280,6 +281,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
             fp[i] = fopen(gfileTemp, "r");
             if (fp[i] == nullptr) {
               printf("I am rank: %d, I was unable to open file: %s", dw.rank, gfileTemp);
+              fflush(stdout);
               MPI_Abort(MPI_COMM_WORLD, -1);
             }
             for (int64_t i = 0; i < (dw.np - 1); i++) {
@@ -304,7 +306,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
 
         // If there was a last read kmer from the file
         if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
-          gIndex.push_back(((lastkmer[i] - batchStart) + fileNo * kmersInBatch));
+          gIndex.push_back(std::pair<int64_t, int64_t>(lastkmer[i] - batchStart, fileNo));
           int64_t r_row_no = lastkmer[i] - batchStart;
           if (!rFlag[r_row_no]) {
             rIndex.push_back(r_row_no);
@@ -325,7 +327,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
             }
             // write kmer to A
             // TODO: since we no longer use A, we can re read the file when constructing the i/p matrix instead of storing the kmers
-            gIndex.push_back(((kmer - batchStart) + fileNo * kmersInBatch));
+            gIndex.push_back(std::pair<int64_t, int64_t>(kmer - batchStart, fileNo));
             
             int64_t r_row_no = kmer - batchStart;
             // printf("fileNo: %lld kmer: %lld batchStart: %lld batchEnd: %lld r_row_no: %lld batchNo: %lld lastBatch: %d\n", fileNo, kmer, batchStart, batchEnd, r_row_no, batchNo, lastBatch);
@@ -370,7 +372,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       }
 
       stime = MPI_Wtime();
-      Pair<int> * rowD = new Pair<int>[n];
 
       int len_bm = sizeof(bitmask) * 8;
       int64_t mm = (numpair + len_bm - 1) / len_bm;
@@ -385,8 +386,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       while (it_gIndex < gIndex.size()) {
 
         // get the first row_no and col_no
-        row_no = gIndex[it_gIndex] % kmersInBatch;
-        col_no = gIndex[it_gIndex] / kmersInBatch;
+        row_no = gIndex[it_gIndex].first;
+        col_no = gIndex[it_gIndex].second;
 
         int64_t j = 0;
         int64_t row_no_J = 0;
@@ -401,8 +402,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
               it_gIndex++;
               if (it_gIndex < gIndex.size()) {
                 // Am I still in the same column ? continue
-                if ((gIndex[it_gIndex] / kmersInBatch) == col_no) {
-                  row_no = gIndex[it_gIndex] % kmersInBatch;
+                if ((gIndex[it_gIndex].second) == col_no) {
+                  row_no = gIndex[it_gIndex].first;
                 }
                 else {
                   break;
@@ -419,7 +420,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
           row_no_J++;
           if (j == numpair) break;
           if (it_gIndex < gIndex.size()) {
-            if ((gIndex[it_gIndex] / kmersInBatch) != col_no) break;
+            if ((gIndex[it_gIndex].second) != col_no) break;
           }
         }
       }
@@ -442,7 +443,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       // J.print_matrix();
       delete [] vpairs;
       delete [] colD;
-      delete [] rowD;
       Timer t_jaccAcc("jaccard_acc");
       t_jaccAcc.start();
       stime = MPI_Wtime();
