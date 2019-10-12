@@ -242,6 +242,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     while (batchNo < nbatch || lastBatch) {
       Timer t_fileRead("File read");
       t_fileRead.start();
+      MPI_Barrier(MPI_COMM_WORLD);
       stime = MPI_Wtime();
       Vector<int> R(kmersInBatch, SP, dw, sr);
       
@@ -336,16 +337,23 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       }
       t_fileRead.stop();
      
-      if (compress) { 
-        if (nkmersToWrite != 0) R.write(nkmersToWrite, rIndex.data(), rData.data());
-        else R.write(0, nullptr);
-      }
-      // R.print();
       if (dw.rank == 0) {
         etime = MPI_Wtime();
         // printf("A constructed, batchNo: %lld A.nnz_tot: %lld A.nrow: %lld time: %1.2lf\n", batchNo, A.nnz_tot, A.nrow, (etime - stime));
         printf("read k-mers, batchNo: %lld non_zero_rows: %lld time: %1.2lf\n", batchNo, nkmersToWrite, (etime - stime));
       }
+      if (compress) {
+        MPI_Barrier(MPI_COMM_WORLD); 
+        stime = MPI_Wtime();
+        if (nkmersToWrite != 0) R.write(nkmersToWrite, rIndex.data(), rData.data());
+        else R.write(0, nullptr);
+        if (dw.rank == 0) {
+          etime = MPI_Wtime();
+          // printf("A constructed, batchNo: %lld A.nnz_tot: %lld A.nrow: %lld time: %1.2lf\n", batchNo, A.nnz_tot, A.nrow, (etime - stime));
+          printf("R.write(), batchNo: %lld non_zero_rows: %lld time: %1.2lf\n", batchNo, nkmersToWrite, (etime - stime));
+        }
+      }
+      // R.print();
       nkmersToWrite = 0;
 
       int64_t numpair = 0;
@@ -454,6 +462,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       if (batchNo > nbatch ) {
         lastBatch = false;
       }
+      if (batchNo == 11) break;
     }
     Timer t_computeS("Compute S");
     t_computeS.start();

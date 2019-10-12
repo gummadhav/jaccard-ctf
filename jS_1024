@@ -1,0 +1,16 @@
+#!/bin/bash
+#SBATCH -J OA
+#SBATCH -o OA.o%j
+#SBATCH -e OA.e%j
+#SBATCH -p large
+##SBATCH -p development
+#SBATCH -N 1024 
+#SBATCH -n 32768
+#SBATCH -t 00:08:00
+#SBATCH -A TG-CCR180006
+ulimit -c unlimited
+
+# fasta reader
+#ibrun ./fasta_reader -lfile bigsifile -infolderPath /work/05572/esolomon/jaccard/BIGSI/unitigs -outfolderPath /scratch/05635/tg849341/lpnl/bigsi_uncompressed -k 31 -m 78929564286 -n 446506 -reverse_complement 1 -perc 0.1 >& bigsi_fasta.log
+
+ibrun /scratch/05635/tg849341/lpnl/jaccard-ctf/jaccard -f /scratch/05635/tg849341/lpnl/bigsi_uncompressed/ -lfile /scratch/05635/tg849341/lpnl/jaccard-ctf/bigsi_uncompressFiles.log -m 1152921504606846976 -n 446506 -nbatch 33554432 -compress 1 >& ubigsi_1024nodes_33554432batches_compress1_barrier.log
