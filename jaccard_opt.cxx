@@ -236,7 +236,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     std::vector<bool> maxkmerReached(nfiles);
     for (int64_t f = 0; f < nfiles; f++) maxkmerReached[f] = false;
     int64_t nkmersToWrite = 0;
-    std::vector<int64_t> gIndex;
+    std::vector< std::pair<int64_t, int64_t> > gIndex;
     // create matrix m X n
     double stime;
     double etime;
@@ -314,7 +314,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
 
           // If there was a last read kmer from the file
           if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
-            gIndex.push_back(((lastkmer[i] - batchStart) + fileNo * kmersInBatch));
+            gIndex.push_back(std::pair<int64_t, int64_t>(lastkmer[i] - batchStart, fileNo));
             int64_t r_row_no = lastkmer[i] - batchStart;
             if (rFlag[r_row_no - miniBatchStart] == false) {
               rIndex.push_back(r_row_no);
@@ -336,7 +336,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
               }
               // write kmer to A
               // TODO: since we no longer use A, we can re read the file when constructing the i/p matrix instead of storing the kmers
-              gIndex.push_back(((kmer - batchStart) + fileNo * kmersInBatch));
+              gIndex.push_back(std::pair<int64_t, int64_t>(kmer - batchStart, fileNo));
               int64_t r_row_no = kmer - batchStart;
               assert(r_row_no < kmersInBatch);
 
@@ -432,8 +432,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       while (it_gIndex < gIndex.size()) {
 
         // get the first row_no and col_no
-        row_no = gIndex[it_gIndex] % kmersInBatch;
-        col_no = gIndex[it_gIndex] / kmersInBatch;
+        row_no = gIndex[it_gIndex].first;
+        col_no = gIndex[it_gIndex].second;
 
         int64_t j = 0;
         int64_t row_no_J = 0;
@@ -448,8 +448,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
               it_gIndex++;
               if (it_gIndex < gIndex.size()) {
                 // Am I still in the same column ? continue
-                if ((gIndex[it_gIndex] / kmersInBatch) == col_no) {
-                  row_no = gIndex[it_gIndex] % kmersInBatch;
+                if ((gIndex[it_gIndex].second) == col_no) {
+                  row_no = gIndex[it_gIndex].first;
                 }
                 else {
                   break;
@@ -466,7 +466,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
           row_no_J++;
           if (j == numpair) break;
           if (it_gIndex < gIndex.size()) {
-            if ((gIndex[it_gIndex] / kmersInBatch) != col_no) break;
+            if ((gIndex[it_gIndex].second) != col_no) break;
           }
         }
       }
