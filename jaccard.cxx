@@ -100,9 +100,11 @@ void jaccard_acc(Matrix<bitmask> & A, Matrix<uint64_t> & B, Matrix<uint64_t> & C
 
   (*get_jaccard_kernel<bitmask>())(A["ki"],A["kj"],B["ij"]);
 
+  /*
   Vector<uint64_t> v(A.ncol, *A.wrld);
   v["i"] += Function<bitmask,uint64_t>([](bitmask a){ return (uint64_t)popcount<bitmask>(a); })(A["ki"]);
   C["ij"] += v["i"] + v["j"];
+  */
 }  
 
 /**
@@ -235,11 +237,17 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     double stime;
     double etime;
     Semiring<int> sr(0,
-                     [](int a, int b) { return std::max(a, b); },
+                     [](int a, int b) { return std::min((a+b), 2); },
                      MPI_MAX,
                      1,
                      [](int a, int b) { return a * b; });
     while (batchNo < nbatch || lastBatch) {
+
+      Vector<int64_t> CV(n, dw);
+      int64_t cntOne = 0;
+      std::vector<int64_t> cntOneD;
+      std::vector<int64_t> cntOneI;
+
       Timer t_fileRead("File read");
       t_fileRead.start();
       stime = MPI_Wtime();
@@ -306,6 +314,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         // If there was a last read kmer from the file
         if (lastkmer[i] != -1 && lastkmer[i] <= batchEnd) {
           gIndex.push_back(std::pair<int64_t, int64_t>(lastkmer[i] - batchStart, fileNo));
+          cntOne++;
           int64_t r_row_no = lastkmer[i] - batchStart;
           rIndex.push_back(r_row_no);
           rData.push_back(1);
@@ -324,6 +333,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
             // write kmer to A
             // TODO: since we no longer use A, we can re read the file when constructing the i/p matrix instead of storing the kmers
             gIndex.push_back(std::pair<int64_t, int64_t>(kmer - batchStart, fileNo));
+            cntOne++;
             
             int64_t r_row_no = kmer - batchStart;
             // printf("fileNo: %lld kmer: %lld batchStart: %lld batchEnd: %lld r_row_no: %lld batchNo: %lld lastBatch: %d\n", fileNo, kmer, batchStart, batchEnd, r_row_no, batchNo, lastBatch);
@@ -333,7 +343,14 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
             nkmersToWrite++;
           }
         }
+        if (cntOne != 0) {
+          cntOneD.push_back(cntOne);
+          cntOneI.push_back(fileNo);
+          cntOne = 0;
+        }
       }
+      CV.write(cntOneD.size(), cntOneI.data(), cntOneD.data());
+      CV.print();
       t_fileRead.stop();
       if (dw.rank == 0) {
         etime = MPI_Wtime();
@@ -351,7 +368,9 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
           printf("R.write(), batchNo: %lld nkmersToWrite for rank 0: %lld time: %1.2lf\n", batchNo, nkmersToWrite, (etime - stime));
         }
       }
-      // R.print();
+      R["i"] = Function<int, int>([](int a){ return (a / 2.0); })(R["i"]);
+      R.sparsify();
+      R.print();
       nkmersToWrite = 0;
 
       int64_t numpair = 0;
@@ -397,6 +416,20 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
           bitmask mask = 0;
           int64_t l = 0;
           while (j < numpair && l < len_bm) {
+            /*
+            if (vpairs[j].d == 1) {
+              j++; l++;
+              it_gIndex++;
+              if (it_gIndex < gIndex.size()) {
+                row_no = gIndex[it_gIndex].first;
+                col_no = gIndex[it_gIndex].second;
+              }
+              else {
+                break;
+              }
+              continue;
+            }
+            */
             if ((!compress && j == row_no) || (compress && vpairs[j].k == row_no)) {
               // update mask
               mask = mask | ((bitmask)1) << ((j % kmersInBatch) % len_bm);
@@ -419,7 +452,16 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
             it_colD++;
           }
           row_no_J++;
-          if (j == numpair) break;
+          if (j == numpair) {
+            // was not able to find the row_no in numpair, must belong to 1 non-zero row
+            while (it_gIndex < gIndex.size()) {
+              if ((gIndex[it_gIndex].second) != col_no) {
+                break;
+              }
+              it_gIndex++;
+            }
+            break;
+          }
           if (it_gIndex < gIndex.size()) {
             if ((gIndex[it_gIndex].second) != col_no) break;
           }
@@ -441,7 +483,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       t_squashZeroRows.stop();
       
       
-      // J.print_matrix();
+      J.print_matrix();
       delete [] vpairs;
       colD.clear();
       Timer t_jaccAcc("jaccard_acc");
@@ -449,6 +491,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       stime = MPI_Wtime();
       if (J.ncol != 0 || J.nrow != 0) {
         jaccard_acc(J, B, C);
+        C["ij"] += CV["i"] + CV["j"];
       }
       t_jaccAcc.stop();
       if (dw.rank == 0) {
@@ -469,7 +512,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     C["ij"] -= B["ij"];
     S["ij"] += Function<uint64_t,uint64_t,double>([](bitmask a, bitmask b){ if (b==0){ assert(a==0); return 0.; } else return (double)a/(double)b; })(B["ij"],C["ij"]);
     t_computeS.stop();
-    // S.print_matrix();
+    S.print_matrix();
 } 
 
 char* getCmdOption(char ** begin,
