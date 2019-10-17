@@ -350,7 +350,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
         }
       }
       CV.write(cntOneD.size(), cntOneI.data(), cntOneD.data());
-      CV.print();
+      // CV.print();
       t_fileRead.stop();
       if (dw.rank == 0) {
         etime = MPI_Wtime();
@@ -370,7 +370,6 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       }
       R["i"] = Function<int, int>([](int a){ return (a / 2.0); })(R["i"]);
       R.sparsify();
-      R.print();
       nkmersToWrite = 0;
 
       int64_t numpair = 0;
@@ -444,8 +443,27 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
                   break;
                 }
               }
+              else {
+                break;
+              }
             }
-            j++; l++;
+            else if (vpairs[j].k > row_no) {
+              it_gIndex++;
+              if (it_gIndex < gIndex.size()) {
+                if ((gIndex[it_gIndex].second) == col_no) {
+                  row_no = gIndex[it_gIndex].first;
+                }
+                else {
+                  break;
+                }
+              }
+              else {
+                break;
+              }
+            }
+            else {
+              j++; l++;
+            }
           }
           if (mask != 0) {
             colD.push_back(Pair<bitmask>((row_no_J + col_no * mm), mask));
@@ -465,6 +483,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
           if (it_gIndex < gIndex.size()) {
             if ((gIndex[it_gIndex].second) != col_no) break;
           }
+          if (it_gIndex ==  gIndex.size()) break;
         }
       }
       gIndex.clear();
@@ -483,7 +502,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       t_squashZeroRows.stop();
       
       
-      J.print_matrix();
+      // J.print_matrix();
       delete [] vpairs;
       colD.clear();
       Timer t_jaccAcc("jaccard_acc");
@@ -491,6 +510,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       stime = MPI_Wtime();
       if (J.ncol != 0 || J.nrow != 0) {
         jaccard_acc(J, B, C);
+        // CV.print();
         C["ij"] += CV["i"] + CV["j"];
       }
       t_jaccAcc.stop();
@@ -512,7 +532,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
     C["ij"] -= B["ij"];
     S["ij"] += Function<uint64_t,uint64_t,double>([](bitmask a, bitmask b){ if (b==0){ assert(a==0); return 0.; } else return (double)a/(double)b; })(B["ij"],C["ij"]);
     t_computeS.stop();
-    S.print_matrix();
+    // S.print_matrix();
 } 
 
 char* getCmdOption(char ** begin,
