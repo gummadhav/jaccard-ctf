@@ -481,7 +481,8 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       int64_t mm = (numpair + len_bm - 1) / len_bm;
 
       // Predefining size to avoid reallocation/copy in push_back(); 
-      Pair<bitmask> *colD = new Pair<bitmask>[mm * maxfiles];
+      // Pair<bitmask> *colD = new Pair<bitmask>[mm * maxfiles];
+      std::vector<Pair<bitmask> > colD;
 
       int64_t it_gIndex = 0;
       int64_t it_colD = 0;
@@ -517,8 +518,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
             j++; l++;
           }
           if (mask != 0) {
-            colD[it_colD].d = mask;
-            colD[it_colD].k = row_no_J + col_no * mm;
+            colD.push_back(Pair<bitmask>((row_no_J + col_no * mm), mask));
             it_colD++;
           }
           row_no_J++;
@@ -536,7 +536,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       gIndex.shrink_to_fit(); // TODO: should we free this space?
       stime = MPI_Wtime();
       Matrix<bitmask> J(mm, n, SP, dw, "J");
-      J.write(it_colD, colD);
+      J.write(colD.size(), colD.data());
       if (dw.rank == 0) {
         etime = MPI_Wtime();
         printf("J constructed, batchNo: %lld J.nnz_tot: %lld J.nrow: %lld J write time: %1.2lf\n", batchNo, J.nnz_tot, J.nrow, (etime - stime));
@@ -546,7 +546,7 @@ void jacc_calc_from_files(int64_t m, int64_t n, int64_t nbatch, char *gfile, con
       
       // J.print_matrix();
       delete [] vpairs;
-      delete [] colD;
+      colD.clear();
       Timer t_jaccAcc("jaccard_acc");
       t_jaccAcc.start();
       stime = MPI_Wtime();
