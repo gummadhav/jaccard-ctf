@@ -520,7 +520,7 @@ int main(int argc, char ** argv){
 
     if (getCmdOption(input_str, input_str+in_num, "-f")) {
        gfile = getCmdOption(input_str, input_str+in_num, "-f");
-     } else gfile = NULL;
+     } else gfile = nullptr;
     
     if (getCmdOption(input_str, input_str+in_num, "-lfile")) {
        listfile = getCmdOption(input_str, input_str+in_num, "-lfile");
@@ -528,28 +528,32 @@ int main(int argc, char ** argv){
     
     if (getCmdOption(input_str, input_str+in_num, "-compress")) {
        compress = atoi(getCmdOption(input_str, input_str+in_num, "-compress"));
-     } else compress = 0;
+     } else compress = 1;
     
-    if (gfile != NULL) {
+    if (gfile != nullptr) {
+      if (listfile == nullptr) {
+        printf("List of k-mer files not provided\n");
+        fflush(stdout);
+        MPI_Abort(MPI_COMM_WORLD, -1);
+      }
       jacc_calc_from_files<uint32_t>(m, n, nbatch, gfile, listfile, compress, dw);
       if (rank == 0) {
         printf("S matrix computed for the specified input dataset\n");
       }
     }
+    else {
+      if (rank == 0){
+        printf("Testing Jaccard similarity matrix construction with %ld-by-%ld k-mer encoding (A) and %ld-by-%ld similarity matrix (S) with nonzero probability in A being p=%lf and number of batches (sets of rows of A) being %ld\n",m,n,n,n,p,nbatch);
+      }
+      bool pass = test_jaccard_calc_random(m, n, p, nbatch);
+      if (rank == 0){
+        if (pass)
+          printf("Correctness tests passed.\n");
+        else
+          printf("Correctness tests FAILED!\n");
+      }
+    }
   }
-
-  /*
-  if (rank == 0){
-    printf("Testing Jaccard similarity matrix construction with %ld-by-%ld k-mer encoding (A) and %ld-by-%ld similarity matrix (S) with nonzero probability in A being p=%lf and number of batches (sets of rows of A) being %ld\n",m,n,n,n,p,nbatch);
-  }
-  bool pass = test_jaccard_calc_random(m, n, p, nbatch);
-  if (rank == 0){
-    if (pass)
-      printf("Correctness tests passed.\n");
-    else
-      printf("Correctness tests FAILED!\n");
-  }
-  */
   MPI_Finalize();
 }
 
